@@ -1,0 +1,8 @@
+{
+  "name": "Lumimei - អ្នកឯកទេសថែរក្សាស្បែកមុខ មុខមុនគ្រប់ប្រភេទ",
+  "description": "យើងជួយថែទាំ និងកែលម្អសុខភាពស្បែកមុខ ដោយប្រើផលិតផលថែស្បែកដែលផ្សំពីគ្រឿងផ្សំធម្មជាតិ មានគុណភាពខ្ពស់ ជួយសន្សំទាំងពេលវេលា និងការចំណាយ។",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
