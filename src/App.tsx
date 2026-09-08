@@ -10,17 +10,61 @@ import {
   KHQRModal,
   OrderSuccessModal,
   AISkincareAdvisorModal,
+  FaceSkinScannerModal,
   WishlistDrawer,
   BeautyTipsSection,
   Footer,
   ChatBotWidget,
-  FaceScanModal,
+  GeminiDebugIndicator,
+  PhoneLogin,
+  VerifyPhone,
+  CompleteProfile,
+  Dashboard,
+  AccountSettings,
+  ProtectedRoute,
+  MyPointsModal,
+  ScanComingSoonModal,
+  AdminDashboard,
+  AdminTaskEditor,
 } from './components';
-import { PRODUCTS, CATEGORIES, SKIN_CONCERNS, BRANDS, KHR_RATE } from './data/products';
+import { ConfirmationResult } from 'firebase/auth';
+import { db, doc, setDoc } from './lib/firebase';
+import { useAuth } from './context/AuthContext';
+import { CATEGORIES, SKIN_CONCERNS, BRANDS, KHR_RATE } from './data/products';
+import { getAllStoredProducts, subscribeToProducts } from './utils/productManager';
 import { Product, CartItem, Order, SkinType, PaymentMethod, OrderCustomerInfo, Language } from './types';
 import { Sparkles, SlidersHorizontal, RefreshCw, CheckCircle2, Filter, ChevronRight } from 'lucide-react';
 
 export default function App() {
+  const { currentUser, userProfile, updateUserProfile, loading: authLoading } = useAuth();
+
+  // Dynamic Product State (Synchronized with Firestore Cloud Catalog & Real-Time updates)
+  const [allProducts, setAllProducts] = useState<Product[]>(() => getAllStoredProducts());
+
+  useEffect(() => {
+    // 1. Subscribe to real-time Firestore product updates across all devices
+    const unsubscribe = subscribeToProducts((products) => {
+      if (products && products.length > 0) {
+        setAllProducts(products);
+      }
+    });
+
+    // 2. Listen to local custom event updates
+    const handleProductsUpdated = (e: any) => {
+      if (e?.detail && Array.isArray(e.detail) && e.detail.length > 0) {
+        setAllProducts(e.detail);
+      } else {
+        setAllProducts(getAllStoredProducts());
+      }
+    };
+    window.addEventListener('lumimei_products_updated', handleProductsUpdated);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('lumimei_products_updated', handleProductsUpdated);
+    };
+  }, []);
+
   // Application State
   const [language, setLanguage] = useState<Language>('km');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -31,14 +75,42 @@ export default function App() {
   const [sortBy, setSortBy] = useState<'featured' | 'price-low' | 'price-high' | 'rating'>('featured');
 
   // Page Navigation State
-  const [currentPage, setCurrentPage] = useState<'home' | 'products'>(() => {
+  type PageType = 'home' | 'products' | 'phone-login' | 'verify-phone' | 'complete-profile' | 'dashboard' | 'account' | 'admin';
+
+  // Auth return destination state
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+  const [authNoticeMessage, setAuthNoticeMessage] = useState<string | null>(null);
+  const [authInitialMode, setAuthInitialMode] = useState<'register' | 'login'>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash || '';
+      const path = window.location.pathname || '';
+      if (path === '/login' || hash === '#login' || hash.includes('login')) return 'login';
+      if (path === '/register' || hash === '#register' || hash.includes('register')) return 'register';
+    }
+    return 'login';
+  });
+
+  const [currentPage, setCurrentPage] = useState<PageType>(() => {
     const path = window.location.pathname;
     const hash = window.location.hash;
+    if (path === '/admin' || hash === '#admin' || hash === '#/admin' || hash.startsWith('#admin')) {
+      return 'admin';
+    }
     if (path === '/products' || hash === '#products' || hash === '#/products' || hash.startsWith('#products')) {
       return 'products';
     }
+    if (path === '/phone-login' || path === '/login' || path === '/register' || hash === '#phone-login' || hash === '#login' || hash === '#register') return 'phone-login';
+    if (path === '/verify-phone' || hash === '#verify-phone') return 'verify-phone';
+    if (path === '/complete-profile' || hash === '#complete-profile') return 'complete-profile';
+    if (path === '/dashboard' || hash === '#dashboard') return 'dashboard';
+    if (path === '/account' || hash === '#account') return 'account';
     return 'home';
   });
+
+  // Phone Auth state
+  const [otpConfirmation, setOtpConfirmation] = useState<ConfirmationResult | null>(null);
+  const [pendingPhoneE164, setPendingPhoneE164] = useState<string>('');
+  const [showPrivacyPolicyModal, setShowPrivacyPolicyModal] = useState(false);
 
   // Commerce State
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -49,7 +121,9 @@ export default function App() {
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isAiAdvisorOpen, setIsAiAdvisorOpen] = useState(false);
-  const [isFaceScanOpen, setIsFaceScanOpen] = useState(false);
+  const [isSkinScanOpen, setIsSkinScanOpen] = useState(false);
+  const [isPointsOpen, setIsPointsOpen] = useState(false);
+  const [isScanComingSoonOpen, setIsScanComingSoonOpen] = useState(false);
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
 
   // Active Order State
@@ -66,14 +140,33 @@ export default function App() {
       const searchParams = new URLSearchParams(window.location.search);
       const productId = searchParams.get('product') || (hash.includes('product-') ? hash.split('product-')[1] : null);
 
-      if (path === '/products' || hash === '#products' || hash === '#/products' || hash.startsWith('#products')) {
+      if (path === '/admin' || hash === '#admin' || hash === '#/admin' || hash.startsWith('#admin')) {
+        setCurrentPage('admin');
+      } else if (path === '/products' || hash === '#products' || hash === '#/products' || hash.startsWith('#products')) {
         setCurrentPage('products');
+      } else if (path === '/login' || hash === '#login' || hash === '#/login' || (path === '/phone-login' && searchParams.get('mode') === 'login')) {
+        setAuthInitialMode('login');
+        setCurrentPage('phone-login');
+      } else if (path === '/register' || hash === '#register' || hash === '#/register' || (path === '/phone-login' && searchParams.get('mode') === 'register')) {
+        setAuthInitialMode('register');
+        setCurrentPage('phone-login');
+      } else if (path === '/phone-login' || hash === '#phone-login') {
+        setCurrentPage('phone-login');
+      } else if (path === '/verify-phone' || hash === '#verify-phone') {
+        setCurrentPage('verify-phone');
+      } else if (path === '/complete-profile' || hash === '#complete-profile') {
+        setCurrentPage('complete-profile');
+      } else if (path === '/dashboard' || hash === '#dashboard') {
+        setCurrentPage('dashboard');
+      } else if (path === '/account' || hash === '#account') {
+        setCurrentPage('account');
       } else {
         setCurrentPage('home');
       }
 
       if (productId) {
-        const found = PRODUCTS.find((p) => p.id === productId);
+        const currentProducts = getAllStoredProducts();
+        const found = currentProducts.find((p) => p.id === productId);
         if (found) {
           setQuickViewProduct(found);
         }
@@ -98,11 +191,81 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const navigateToProducts = () => {
+  const navigateToProducts = (category = 'all') => {
     if (window.location.pathname !== '/products') {
       window.history.pushState({}, '', '/products');
     }
+    if (category) {
+      setSelectedCategory(category);
+    }
     setCurrentPage('products');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToPromotions = () => {
+    if (window.location.pathname !== '/products') {
+      window.history.pushState({}, '', '/products?cat=promotion');
+    }
+    setSelectedCategory('promotion');
+    setSearchQuery('');
+    setCurrentPage('products');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToPhoneLogin = (mode: 'login' | 'register' = 'login', notice?: string) => {
+    setAuthInitialMode(mode);
+    if (notice) {
+      setAuthNoticeMessage(notice);
+    } else {
+      setAuthNoticeMessage(null);
+    }
+    const targetHash = mode === 'login' ? '#login' : '#register';
+    if (window.location.hash !== targetHash) {
+      window.history.pushState({}, '', targetHash);
+    }
+    setCurrentPage('phone-login');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToVerifyPhone = (confirmation: ConfirmationResult, phone: string) => {
+    setOtpConfirmation(confirmation);
+    setPendingPhoneE164(phone);
+    if (window.location.pathname !== '/verify-phone') {
+      window.history.pushState({}, '', '/verify-phone');
+    }
+    setCurrentPage('verify-phone');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToCompleteProfile = () => {
+    if (window.location.pathname !== '/complete-profile') {
+      window.history.pushState({}, '', '/complete-profile');
+    }
+    setCurrentPage('complete-profile');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToDashboard = () => {
+    if (window.location.pathname !== '/dashboard') {
+      window.history.pushState({}, '', '/dashboard');
+    }
+    setCurrentPage('dashboard');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToAccount = () => {
+    if (window.location.pathname !== '/account') {
+      window.history.pushState({}, '', '/account');
+    }
+    setCurrentPage('account');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateToAdmin = () => {
+    if (window.location.pathname !== '/admin' && window.location.hash !== '#admin') {
+      window.history.pushState({}, '', '/admin');
+    }
+    setCurrentPage('admin');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -119,17 +282,36 @@ export default function App() {
 
   // Filtered Products Computation
   const filteredProducts = useMemo(() => {
-    return PRODUCTS.filter((p) => {
+    return allProducts.filter((p) => {
+      if (!p) return false;
+      const skinConcerns = Array.isArray(p.skinConcerns) ? p.skinConcerns : [];
+      const skinTypes = Array.isArray(p.skinTypes) ? p.skinTypes : [];
+
       // Category Filter
-      if (selectedCategory !== 'all' && p.category !== selectedCategory) {
-        return false;
+      if (selectedCategory !== 'all') {
+        if (selectedCategory === 'promotion') {
+          const isPromo =
+            p.category === 'promotion' ||
+            (p.originalPriceUsd && p.originalPriceUsd > p.priceUsd) ||
+            p.isBestSeller ||
+            p.isFreeShipping;
+          if (!isPromo) return false;
+        } else if (selectedCategory === 'best-seller' || selectedCategory === 'bestseller') {
+          const isBest =
+            p.category === 'best-seller' ||
+            p.category === 'bestseller' ||
+            Boolean(p.isBestSeller);
+          if (!isBest) return false;
+        } else if (p.category !== selectedCategory) {
+          return false;
+        }
       }
       // Skin Concern Filter
-      if (selectedSkinConcern !== 'all' && !p.skinConcerns.includes(selectedSkinConcern)) {
+      if (selectedSkinConcern !== 'all' && !skinConcerns.includes(selectedSkinConcern)) {
         return false;
       }
       // Skin Type Filter
-      if (selectedSkinType !== 'all' && !p.skinTypes.includes('all') && !p.skinTypes.includes(selectedSkinType as SkinType)) {
+      if (selectedSkinType !== 'all' && !skinTypes.includes('all') && !skinTypes.includes(selectedSkinType as SkinType)) {
         return false;
       }
       // Brand Filter
@@ -139,22 +321,34 @@ export default function App() {
       // Search Query Filter
       if (searchQuery.trim() !== '') {
         const q = searchQuery.toLowerCase();
-        const matchesName = p.name.toLowerCase().includes(q) || p.nameKm.toLowerCase().includes(q);
-        const matchesBrand = p.brand.toLowerCase().includes(q);
-        const matchesDesc = p.description.toLowerCase().includes(q) || p.descriptionKm.toLowerCase().includes(q);
-        const matchesIng = p.ingredients.toLowerCase().includes(q);
+        const matchesName = (p.name || '').toLowerCase().includes(q) || (p.nameKm || '').toLowerCase().includes(q);
+        const matchesBrand = (p.brand || '').toLowerCase().includes(q);
+        const matchesDesc = (p.description || '').toLowerCase().includes(q) || (p.descriptionKm || '').toLowerCase().includes(q);
+        const matchesIng = (p.ingredients || '').toLowerCase().includes(q);
         if (!matchesName && !matchesBrand && !matchesDesc && !matchesIng) {
           return false;
         }
       }
       return true;
     }).sort((a, b) => {
-      if (sortBy === 'price-low') return a.priceUsd - b.priceUsd;
-      if (sortBy === 'price-high') return b.priceUsd - a.priceUsd;
-      if (sortBy === 'rating') return b.rating - a.rating;
+      if (sortBy === 'price-low') return (a.priceUsd || 0) - (b.priceUsd || 0);
+      if (sortBy === 'price-high') return (b.priceUsd || 0) - (a.priceUsd || 0);
+      if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
       return 0; // default featured
     });
-  }, [selectedCategory, selectedSkinConcern, selectedSkinType, selectedBrand, searchQuery, sortBy]);
+  }, [allProducts, selectedCategory, selectedSkinConcern, selectedSkinType, selectedBrand, searchQuery, sortBy]);
+
+  // Promotional Products for Home Page
+  const promotionalProducts = useMemo(() => {
+    const promos = allProducts.filter(
+      (p) =>
+        p.category === 'promotion' ||
+        (p.originalPriceUsd && p.originalPriceUsd > p.priceUsd) ||
+        p.isBestSeller ||
+        p.isFreeShipping
+    );
+    return promos.length > 0 ? promos : allProducts;
+  }, [allProducts]);
 
   // Cart Handlers
   const handleAddToCart = (product: Product, quantity = 1) => {
@@ -176,7 +370,48 @@ export default function App() {
     setIsCartOpen(true);
   };
 
+  const handleRestorePoints = (pointsToRestore: number) => {
+    if (pointsToRestore <= 0) return;
+    if (currentUser && userProfile) {
+      const currentPts = userProfile.points !== undefined ? userProfile.points : 15;
+      updateUserProfile({ points: currentPts + pointsToRestore }).catch(console.error);
+    } else {
+      const currentGuestPts = Number(localStorage.getItem('lumimei_guest_points') || '15');
+      const newGuestPts = currentGuestPts + pointsToRestore;
+      localStorage.setItem('lumimei_guest_points', newGuestPts.toString());
+      window.dispatchEvent(new Event('pointsUpdated'));
+    }
+    window.dispatchEvent(new CustomEvent('pointsRestored', { detail: { points: pointsToRestore } }));
+  };
+
   const handleUpdateCartQuantity = (productId: string, quantity: number) => {
+    const existingItem = cart.find((item) => item.product.id === productId);
+    if (existingItem && existingItem.product.pointsCost) {
+      const pointsCost = existingItem.product.pointsCost;
+      if (quantity < existingItem.quantity) {
+        const qtyDiff = existingItem.quantity - Math.max(0, quantity);
+        const pointsToReturn = qtyDiff * pointsCost;
+        handleRestorePoints(pointsToReturn);
+      } else if (quantity > existingItem.quantity) {
+        const qtyDiff = quantity - existingItem.quantity;
+        const requiredPts = qtyDiff * pointsCost;
+        const currentPts = userProfile?.points !== undefined
+          ? userProfile.points
+          : Number(localStorage.getItem('lumimei_guest_points') || '15');
+
+        if (currentPts < requiredPts) {
+          return;
+        }
+
+        if (currentUser && userProfile) {
+          updateUserProfile({ points: currentPts - requiredPts }).catch(console.error);
+        } else {
+          localStorage.setItem('lumimei_guest_points', (currentPts - requiredPts).toString());
+          window.dispatchEvent(new Event('pointsUpdated'));
+        }
+      }
+    }
+
     if (quantity <= 0) {
       setCart((prev) => prev.filter((item) => item.product.id !== productId));
     } else {
@@ -187,6 +422,11 @@ export default function App() {
   };
 
   const handleRemoveFromCart = (productId: string) => {
+    const existingItem = cart.find((item) => item.product.id === productId);
+    if (existingItem && existingItem.product.pointsCost) {
+      const pointsToReturn = existingItem.quantity * existingItem.product.pointsCost;
+      handleRestorePoints(pointsToReturn);
+    }
     setCart((prev) => prev.filter((item) => item.product.id !== productId));
   };
 
@@ -213,6 +453,53 @@ export default function App() {
     setShippingFeeUsd(shipping);
     setIsCartOpen(false);
     setIsCheckoutOpen(true);
+  };
+
+  // Helper to award points on purchase ($10 spent = 1 point)
+  const saveOrderToHistory = (order: Order) => {
+    try {
+      const existing = JSON.parse(localStorage.getItem('lumimei_user_orders') || '[]');
+      const filtered = existing.filter((o: Order) => o.id !== order.id);
+      const updated = [order, ...filtered];
+      localStorage.setItem('lumimei_user_orders', JSON.stringify(updated));
+      window.dispatchEvent(new Event('ordersUpdated'));
+
+      // 1. Direct Firestore write to orders collection
+      try {
+        const orderDocRef = doc(db, 'orders', order.id);
+        setDoc(orderDocRef, {
+          ...order,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true }).catch((fsErr) => console.warn('Direct Firestore order save warning:', fsErr));
+      } catch (fsErr) {
+        console.warn('Firestore doc creation error:', fsErr);
+      }
+
+      // 2. Also sync order to backend Admin database
+      fetch('/api/admin/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(order),
+      }).catch((err) => console.warn('Could not sync order to backend:', err));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const awardPointsForPurchase = (subtotalAmount: number) => {
+    const earnedPoints = Math.floor(subtotalAmount / 10);
+    if (earnedPoints <= 0) return;
+
+    if (currentUser && userProfile) {
+      const currentPts = userProfile.points !== undefined ? userProfile.points : 15;
+      const newPts = currentPts + earnedPoints;
+      updateUserProfile({ points: newPts }).catch(console.error);
+    } else {
+      const currentGuestPts = Number(localStorage.getItem('lumimei_guest_points') || '15');
+      const newGuestPts = currentGuestPts + earnedPoints;
+      localStorage.setItem('lumimei_guest_points', newGuestPts.toString());
+      window.dispatchEvent(new Event('pointsUpdated'));
+    }
   };
 
   // Order Submission Handler
@@ -243,9 +530,12 @@ export default function App() {
 
     if (paymentMethod === 'khqr' || paymentMethod === 'aba_pay') {
       setActiveKHQROrder(newOrder);
+      saveOrderToHistory(newOrder);
     } else {
       setCart([]);
       setCompletedOrder({ ...newOrder, paymentStatus: 'pending' });
+      saveOrderToHistory({ ...newOrder, paymentStatus: 'pending' });
+      awardPointsForPurchase(cartSubtotalUsd);
     }
   };
 
@@ -260,6 +550,8 @@ export default function App() {
       setActiveKHQROrder(null);
       setCart([]);
       setCompletedOrder(paidOrder);
+      saveOrderToHistory(paidOrder);
+      awardPointsForPurchase(paidOrder.subtotalUsd);
     }
   };
 
@@ -276,13 +568,18 @@ export default function App() {
         onOpenCart={() => setIsCartOpen(true)}
         onOpenWishlist={() => setIsWishlistOpen(true)}
         onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
-        onOpenFaceScan={() => setIsFaceScanOpen(true)}
+        onOpenSkinScan={() => setIsScanComingSoonOpen(true)}
+        onOpenPoints={() => setIsPointsOpen(true)}
         language={language}
         setLanguage={setLanguage}
         totalUsd={cartSubtotalUsd}
         currentPage={currentPage}
         onNavigateToHome={navigateToHome}
         onNavigateToProducts={navigateToProducts}
+        onNavigateToPhoneLogin={(mode) => navigateToPhoneLogin(mode || 'login')}
+        onNavigateToDashboard={navigateToDashboard}
+        onNavigateToAccount={navigateToAccount}
+        onNavigateToAdmin={navigateToAdmin}
       />
 
       {/* Main App Canvas */}
@@ -290,7 +587,7 @@ export default function App() {
         {currentPage === 'products' ? (
           <ProductsPage
             products={filteredProducts}
-            totalProductCount={PRODUCTS.length}
+            totalProductCount={allProducts.length}
             language={language}
             selectedCategory={selectedCategory}
             setSelectedCategory={setSelectedCategory}
@@ -311,13 +608,105 @@ export default function App() {
             onQuickView={(p) => handleQuickViewWithUrl(p)}
             onBackToHome={navigateToHome}
           />
+        ) : currentPage === 'phone-login' ? (
+          <PhoneLogin
+            initialMode={authInitialMode}
+            noticeMessage={authNoticeMessage || undefined}
+            onOTPSent={(confirmation, phone) => navigateToVerifyPhone(confirmation, phone)}
+            onNavigateHome={() => {
+              setAuthNoticeMessage(null);
+              navigateToHome();
+            }}
+            onFacebookSuccess={() => {
+              setAuthNoticeMessage(null);
+              navigateToDashboard();
+            }}
+            onOpenPrivacyPolicy={() => setShowPrivacyPolicyModal(true)}
+            onNavigateToAdmin={navigateToAdmin}
+          />
+        ) : currentPage === 'verify-phone' ? (
+          otpConfirmation ? (
+            <VerifyPhone
+              confirmationResult={otpConfirmation}
+              phoneE164={pendingPhoneE164}
+              onVerified={(isNewUser) => {
+                if (isNewUser) {
+                  navigateToCompleteProfile();
+                } else {
+                  setReturnTo(null);
+                  setAuthNoticeMessage(null);
+                  navigateToDashboard();
+                }
+              }}
+              onChangePhoneNumber={() => navigateToPhoneLogin('login')}
+              onResendOTP={async () => {
+                return otpConfirmation;
+              }}
+            />
+          ) : (
+            <PhoneLogin
+              initialMode={authInitialMode}
+              noticeMessage={authNoticeMessage || undefined}
+              onOTPSent={(confirmation, phone) => navigateToVerifyPhone(confirmation, phone)}
+              onNavigateHome={() => {
+                setAuthNoticeMessage(null);
+                navigateToHome();
+              }}
+              onFacebookSuccess={() => {
+                setAuthNoticeMessage(null);
+                navigateToDashboard();
+              }}
+              onOpenPrivacyPolicy={() => setShowPrivacyPolicyModal(true)}
+            />
+          )
+        ) : currentPage === 'complete-profile' ? (
+          <ProtectedRoute onUnauthenticated={() => navigateToPhoneLogin()}>
+            <CompleteProfile
+              onCompleted={() => {
+                setReturnTo(null);
+                setAuthNoticeMessage(null);
+                navigateToDashboard();
+              }}
+              onOpenPrivacyPolicy={() => setShowPrivacyPolicyModal(true)}
+            />
+          </ProtectedRoute>
+        ) : currentPage === 'dashboard' ? (
+          <ProtectedRoute
+            onUnauthenticated={() => navigateToPhoneLogin()}
+            onProfileIncomplete={navigateToCompleteProfile}
+          >
+            <Dashboard
+              onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
+              onNavigateToAccount={navigateToAccount}
+              onLogoutSuccess={navigateToHome}
+              onOpenPoints={() => setIsPointsOpen(true)}
+              onOpenSkinScan={() => setIsScanComingSoonOpen(true)}
+              onNavigateToAdmin={navigateToAdmin}
+            />
+          </ProtectedRoute>
+        ) : currentPage === 'admin' ? (
+          <AdminDashboard
+            language={language}
+            onNavigateHome={navigateToHome}
+          />
+        ) : currentPage === 'account' ? (
+          <ProtectedRoute
+            onUnauthenticated={() => navigateToPhoneLogin()}
+            onProfileIncomplete={navigateToCompleteProfile}
+          >
+            <AccountSettings
+              onNavigateHome={navigateToHome}
+              onLogoutSuccess={navigateToHome}
+              onLanguageChanged={(lang) => setLanguage(lang)}
+            />
+          </ProtectedRoute>
         ) : (
           <>
             {/* Promotional Hero Banner */}
             <HeroBanner
               language={language}
+              onNavigateToProducts={navigateToProducts}
               onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
-              onOpenFaceScan={() => setIsFaceScanOpen(true)}
               onSelectTag={(tag) => {
                 if (['sunscreen', 'cleanser', 'serum', 'moisturizer'].includes(tag)) {
                   setSelectedCategory(tag);
@@ -330,18 +719,74 @@ export default function App() {
               }}
             />
 
-            {/* Featured Product Collection Section */}
+            {/* Promotion Section */}
+            <div id="promotion-section" className="bg-white rounded-3xl p-4 sm:p-6 border-2 border-emerald-600/20 shadow-sm my-6 scroll-mt-28">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-emerald-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-2.5 h-8 bg-emerald-600 rounded-full" />
+                  <div>
+                    <h2 className="font-extrabold font-opensans" style={{ color: '#009966', fontSize: '27px' }}>
+                      Promotion
+                    </h2>
+                  </div>
+                </div>
+
+                <button
+                  onClick={navigateToPromotions}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer self-start sm:self-auto"
+                >
+                  <span>
+                    {language === 'km'
+                      ? 'មើលប្រូម៉ូសិនទាំងអស់ (' + promotionalProducts.length + ')'
+                      : language === 'zh'
+                      ? '查看所有特惠 (' + promotionalProducts.length + ')'
+                      : 'View All Promotions (' + promotionalProducts.length + ')'}
+                  </span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Promotion Product Cards Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+                {promotionalProducts.slice(0, 4).map((prod) => (
+                  <ProductCard
+                    key={'promo-' + prod.id}
+                    product={prod}
+                    language={language}
+                    isWishlisted={wishlist.some((p) => p.id === prod.id)}
+                    isInCart={cart.some((item) => item.product.id === prod.id)}
+                    onToggleWishlist={handleToggleWishlist}
+                    onAddToCart={(p) => handleAddToCart(p, 1)}
+                    onQuickView={(p) => handleQuickViewWithUrl(p)}
+                  />
+                ))}
+              </div>
+
+              <div className="mt-6 text-center pt-4 border-t border-slate-100">
+                <button
+                  onClick={navigateToPromotions}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-2xl text-xs sm:text-sm font-bold shadow-md hover:shadow-lg transition cursor-pointer"
+                >
+                  <span>
+                    {language === 'km'
+                      ? 'ចូលទៅកាន់ទំព័រប្រូម៉ូសិនទាំងអស់ →'
+                      : language === 'zh'
+                      ? '进入所有特惠页面 →'
+                      : 'Go to All Promotions Page →'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Lumimei Set Section */}
             <div id="products-section" className="bg-white rounded-3xl p-4 sm:p-6 border-2 border-emerald-600/20 shadow-sm my-6 scroll-mt-28">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-emerald-100">
                 <div className="flex items-center gap-3">
                   <div className="w-2.5 h-8 bg-emerald-600 rounded-full" />
                   <div>
-                    <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 font-opensans">
-                      {language === 'km' ? 'ផលិតផលពេញនិយម' : language === 'zh' ? '热门推荐商品' : 'Featured Products'}
+                    <h2 className="font-extrabold font-opensans" style={{ color: '#009966', fontSize: '27px' }}>
+                      {language === 'km' ? 'ផលិតផល Lumimei' : language === 'zh' ? 'Lumimei 护肤品' : 'Lumimei Products'}
                     </h2>
-                    <p className="text-xs text-slate-500 font-medium">
-                      {language === 'km' ? 'ជ្រើសរើសផលិតផលល្អបំផុតសម្រាប់ស្បែកមុខអ្នក' : 'Best skincare choices for your skin'}
-                    </p>
                   </div>
                 </div>
 
@@ -349,7 +794,7 @@ export default function App() {
                   onClick={navigateToProducts}
                   className="flex items-center gap-2 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer self-start sm:self-auto"
                 >
-                  <span>{language === 'km' ? 'មើលផលិតផលទាំងអស់ (' + PRODUCTS.length + ')' : language === 'zh' ? '查看所有商品' : 'View All Products (' + PRODUCTS.length + ')'}</span>
+                  <span>{language === 'km' ? 'មើលផលិតផលទាំងអស់ (' + allProducts.length + ')' : language === 'zh' ? '查看所有商品 (' + allProducts.length + ')' : 'View All Products (' + allProducts.length + ')'}</span>
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
@@ -358,7 +803,7 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
                 {filteredProducts.slice(0, 8).map((prod) => (
                   <ProductCard
-                    key={prod.id}
+                    key={'set-' + prod.id}
                     product={prod}
                     language={language}
                     isWishlisted={wishlist.some((p) => p.id === prod.id)}
@@ -379,25 +824,32 @@ export default function App() {
                 </button>
               </div>
             </div>
-
-            {/* Educational Skincare Tips */}
-            <BeautyTipsSection language={language} />
           </>
         )}
       </main>
 
       {/* Footer */}
-      <Footer language={language} />
+      <Footer language={language} onNavigateToAdmin={navigateToAdmin} />
 
       {/* Overlays, Drawers & Modals */}
-      <ProductDetailModal
-        product={quickViewProduct}
-        language={language}
-        isWishlisted={quickViewProduct ? wishlist.some((p) => p.id === quickViewProduct.id) : false}
-        onClose={() => handleQuickViewWithUrl(null)}
-        onToggleWishlist={handleToggleWishlist}
-        onAddToCart={(p, qty) => handleAddToCart(p, qty)}
-      />
+      {quickViewProduct && (
+        <ProductDetailModal
+          product={quickViewProduct}
+          language={language}
+          isWishlisted={wishlist.some((p) => p.id === quickViewProduct.id)}
+          onClose={() => handleQuickViewWithUrl(null)}
+          onToggleWishlist={handleToggleWishlist}
+          onAddToCart={(p, qty) => handleAddToCart(p, qty)}
+          onBuyNow={(p, qty) => {
+            handleAddToCart(p, qty);
+            handleQuickViewWithUrl(null);
+            setIsCartOpen(true);
+          }}
+          onOpenChat={() => {
+            window.open('https://t.me/lumimei_cambodia', '_blank');
+          }}
+        />
+      )}
 
       <CartDrawer
         isOpen={isCartOpen}
@@ -447,20 +899,93 @@ export default function App() {
         language={language}
         onClose={() => setIsAiAdvisorOpen(false)}
         onAddMultipleToCart={handleAddMultipleToCart}
+        products={allProducts}
       />
 
-      <FaceScanModal
-        isOpen={isFaceScanOpen}
+      <MyPointsModal
+        isOpen={isPointsOpen}
         language={language}
-        onClose={() => setIsFaceScanOpen(false)}
+        onClose={() => setIsPointsOpen(false)}
         onAddToCart={(p) => handleAddToCart(p, 1)}
+      />
+
+      <ScanComingSoonModal
+        isOpen={isScanComingSoonOpen}
+        language={language}
+        onClose={() => setIsScanComingSoonOpen(false)}
+        onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
+      />
+
+      <FaceSkinScannerModal
+        isOpen={isSkinScanOpen}
+        language={language}
+        onClose={() => setIsSkinScanOpen(false)}
+        onAddToCart={(p) => handleAddToCart(p, 1)}
+        onAddMultipleToCart={handleAddMultipleToCart}
+        onNavigateToPhoneLogin={() => navigateToPhoneLogin()}
+        products={allProducts}
       />
 
       <ChatBotWidget
         language={language}
         onSelectProduct={(product) => handleQuickViewWithUrl(product)}
+        products={allProducts}
       />
+
+      {/* Development Mode Indicator */}
+      <GeminiDebugIndicator />
+
+      {/* Privacy Policy Modal */}
+      {showPrivacyPolicyModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl relative border border-emerald-100 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <h3 className="text-lg font-extrabold text-slate-900 font-opensans">
+                គោលការណ៍ឯកជនភាព និងលក្ខខណ្ឌប្រើប្រាស់ Lumimei
+              </h3>
+              <button
+                onClick={() => setShowPrivacyPolicyModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="py-4 space-y-3 text-xs text-slate-600 leading-relaxed max-h-[60vh] overflow-y-auto">
+              <p className="font-bold text-slate-800">១. ការប្រមូលទិន្នន័យផ្ទាល់ខ្លួន</p>
+              <p>
+                យើងខ្ញុំប្រមូលទិន្នន័យលេខទូរស័ព្ទ និងឈ្មោះរបស់អ្នក សម្រាប់តែការផ្ទៀងផ្ទាត់អត្តសញ្ញាណ គ្រប់គ្រងគណនី និងផ្តល់សេវាកម្មថែរក្សាស្បែកមុខផ្ទាល់ខ្លួនតែប៉ុណ្ណោះ។
+              </p>
+
+              <p className="font-bold text-slate-800 mt-3">២. សុវត្ថិភាព និងការរក្សាទុក</p>
+              <p>
+                លេខទូរស័ព្ទត្រូវបានផ្ទៀងផ្ទាត់តាមប្រព័ន្ធ Firebase Phone Authentication និងរក្សាទុកក្នុងទម្រង់អន្តរជាតិ E.164។ លេខកូដ OTP មិនត្រូវបានរក្សាទុកក្នុង Firestore ឬប្រព័ន្ធ Local Storage ឡើយ។
+              </p>
+
+              <p className="font-bold text-slate-800 mt-3">៣. សិទ្ធិរបស់អ្នកប្រើប្រាស់</p>
+              <p>
+                អ្នកមានសិទ្ធិកែប្រែឈ្មោះ ភាសា ផ្លាស់ប្ដូរលេខទូរស័ព្ទ ឬលុបគណនីរបស់អ្នកចេញពីប្រព័ន្ធ Lumimei បានគ្រប់ពេលវេលាតាមរយៈទំព័រ "ការកំណត់គណនី"។
+              </p>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 text-right">
+              <button
+                onClick={() => setShowPrivacyPolicyModal(false)}
+                className="px-6 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-2xl text-xs cursor-pointer shadow-xs"
+              >
+                ខ្ញុំយល់ព្រម
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ⚙️ Lumimei 动态积分管理后台 (Visible when current page is admin or when requested) */}
+      {currentPage === 'admin' && (
+        <div className="max-w-4xl mx-auto my-8 px-4">
+          <AdminTaskEditor />
+        </div>
+      )}
     </div>
   );
 }
-

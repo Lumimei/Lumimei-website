@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Trash2, ShoppingBag, ArrowRight, Tag, Truck, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Trash2, ShoppingBag, ArrowRight, Tag, Truck, ShieldCheck, Gift, Sparkles } from 'lucide-react';
 import { CartItem, Language } from '../types';
 import { KHR_RATE } from '../data/products';
 
@@ -22,11 +22,27 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   onRemoveItem,
   onProceedToCheckout,
 }) => {
-  if (!isOpen) return null;
-
   const [promoCode, setPromoCode] = useState('');
   const [appliedPromo, setAppliedPromo] = useState<string | null>(null);
   const [promoDiscountRate, setPromoDiscountRate] = useState<number>(0); // 0.10 for 10%
+  const [refundNotice, setRefundNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handlePointsRestored = (e: CustomEvent<{ points: number }>) => {
+      if (e.detail?.points) {
+        setRefundNotice(
+          language === 'km'
+            ? `បានប្រគល់ +${e.detail.points} ពិន្ទុ ត្រឡប់ទៅកាន់ "ពិន្ទុខ្ញុំ" វិញដោយជោគជ័យ!`
+            : `Refunded +${e.detail.points} points back to "My Points"!`
+        );
+        setTimeout(() => setRefundNotice(null), 4500);
+      }
+    };
+    window.addEventListener('pointsRestored' as any, handlePointsRestored);
+    return () => window.removeEventListener('pointsRestored' as any, handlePointsRestored);
+  }, [language]);
+
+  if (!isOpen) return null;
 
   const subtotalUsd = items.reduce(
     (sum, item) => sum + item.product.priceUsd * item.quantity,
@@ -34,8 +50,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   );
 
   const discountUsd = subtotalUsd * promoDiscountRate;
-  const freeShippingThreshold = 30; // $30 USD
-  const isFreeShipping = subtotalUsd >= freeShippingThreshold;
+  const freeShippingThreshold = 25; // $25 USD
+  const earnedPoints = Math.floor(subtotalUsd / 10);
+  const hasFreeShippingItem = items.some((item) => item.product.isFreeShipping);
+  const isFreeShipping = subtotalUsd >= freeShippingThreshold || hasFreeShippingItem || (appliedPromo ? appliedPromo.includes('FREESHIP') : false);
   const shippingFeeUsd = items.length > 0 ? (isFreeShipping ? 0 : 1.5) : 0;
   const finalTotalUsd = Math.max(0, subtotalUsd - discountUsd + shippingFeeUsd);
   const finalTotalKhr = Math.round(finalTotalUsd * KHR_RATE);
@@ -113,10 +131,31 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Points Earned Info */}
+            <div className="mt-2 pt-2 border-t border-teal-200/50 flex items-center justify-between text-[11px] text-amber-900 font-bold bg-amber-50/80 p-2 rounded-xl border border-amber-200/60">
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center text-[10px] shrink-0 font-extrabold">🎁</span>
+                <span>
+                  {language === 'km'
+                    ? `ទិញអស់ $10 ទទួលបាន 1 ពិន្ទុ (ទទួលបាន +${earnedPoints} ពិន្ទុ)`
+                    : language === 'zh'
+                    ? `每满 $10 获 1 积分 (预计可得 +${earnedPoints} 积分)`
+                    : `Earn 1 point per $10 spent (Earns +${earnedPoints} points)`}
+                </span>
+              </span>
+            </div>
           </div>
 
           {/* Cart Items List */}
           <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+            {refundNotice && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2 text-emerald-900 text-xs font-bold animate-fadeIn">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{refundNotice}</span>
+              </div>
+            )}
+
             {items.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-3">
                 <div className="w-16 h-16 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center">
@@ -164,6 +203,17 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                         (៛{(item.product.priceUsd * KHR_RATE).toLocaleString()})
                       </span>
                     </div>
+
+                    {item.product.pointsCost && (
+                      <div className="inline-flex items-center gap-1 text-[10px] font-extrabold text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded-md mt-1">
+                        <Gift className="w-3 h-3 text-amber-600" />
+                        <span>
+                          {language === 'km'
+                            ? `រង្វាន់ប្តូរតាមពិន្ទុ (${item.product.pointsCost} ពិន្ទុ)`
+                            : `Points Reward (${item.product.pointsCost} pts)`}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Quantity controls */}
                     <div className="flex items-center gap-2 mt-2">

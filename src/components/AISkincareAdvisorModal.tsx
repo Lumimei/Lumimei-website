@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import { X, Sparkles, Loader2, Check, ArrowRight, Bot, RefreshCw } from 'lucide-react';
 import { Product, SkinType, Language } from '../types';
-import { PRODUCTS } from '../data/products';
+import { getAllStoredProducts } from '../utils/productManager';
+import { GEMINI_ENABLED } from '../config/appConfig';
 
 interface AISkincareAdvisorModalProps {
   isOpen: boolean;
   language: Language;
   onClose: () => void;
   onAddMultipleToCart: (products: Product[]) => void;
+  products?: Product[];
 }
 
 export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
@@ -15,15 +17,18 @@ export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
   language,
   onClose,
   onAddMultipleToCart,
+  products,
 }) => {
-  if (!isOpen) return null;
-
   const [step, setStep] = useState<1 | 2>(1);
   const [skinType, setSkinType] = useState<SkinType>('oily');
   const [concerns, setConcerns] = useState<string[]>(['acne']);
   const [budget, setBudget] = useState<string>('budget-friendly');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ routine: string; advice: string } | null>(null);
+
+  if (!isOpen) return null;
+
+  const catalog = products && products.length > 0 ? products : getAllStoredProducts();
 
   const skinTypeOptions = [
     { id: 'oily', labelKm: 'ស្បែកមុខខ្លាញ់ (Oily)', labelEn: 'Oily Skin' },
@@ -52,6 +57,18 @@ export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
   const handleConsult = async () => {
     setLoading(true);
     setStep(2);
+
+    if (!GEMINI_ENABLED) {
+      setTimeout(() => {
+        setResult({
+          routine: 'មុខងារវិភាគស្បែកដោយ AI កំពុងត្រូវបានរៀបចំ។ សូមព្យាយាមម្ដងទៀតនៅពេលក្រោយ។',
+          advice: ''
+        });
+        setLoading(false);
+      }, 300);
+      return;
+    }
+
     try {
       const response = await fetch('/api/ai-advisor', {
         method: 'POST',
@@ -66,8 +83,7 @@ export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
 
       const data = await response.json();
       setResult(data);
-    } catch (err) {
-      console.error(err);
+    } catch {
       setResult({
         routine: language === 'km'
           ? '១. លាងមុខជាមួយ CeraVe Gentle Cleanser\n២. ប្រើតូណឺ Anua Heartleaf 77%\n៣. លាបឡេការពារកំដៅថ្ងៃ Beauty of Joseon'
@@ -82,8 +98,13 @@ export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
   };
 
   // Find matching products from store catalog
-  const recommendedProducts = PRODUCTS.filter(
-    (p) => p.skinTypes.includes('all') || p.skinTypes.includes(skinType) || concerns.some((c) => p.skinConcerns.includes(c))
+  const recommendedProducts = catalog.filter(
+    (p) => {
+      if (!p) return false;
+      const skinTypes = Array.isArray(p.skinTypes) ? p.skinTypes : [];
+      const skinConcerns = Array.isArray(p.skinConcerns) ? p.skinConcerns : [];
+      return skinTypes.includes('all') || skinTypes.includes(skinType) || (concerns || []).some((c) => skinConcerns.includes(c));
+    }
   ).slice(0, 3);
 
   return (
@@ -188,7 +209,7 @@ export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
                   </h4>
                   <p className="text-xs text-slate-500 max-w-xs">
                     {language === 'km'
-                      ? 'កំពុងជ្រើសរើសរូបមន្ត និងផលិតផលដែលសមស្របបំផុតពី Beauty Bloom'
+                      ? 'កំពុងជ្រើសរើសរូបមន្ត និងផលិតផលដែលសមស្របបំផុតពី Lumimei'
                       : 'Searching ingredients tailored to your specific skin needs'}
                   </p>
                 </div>
@@ -215,7 +236,7 @@ export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
                   {/* Matching Catalog Products */}
                   <div className="space-y-3">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      {language === 'km' ? 'ផលិតផលសមស្របដែលមានក្នុងហាង Beauty Bloom' : 'Recommended Store Products'}
+                      {language === 'km' ? 'ផលិតផលសមស្របដែលមានក្នុងហាង Lumimei' : 'Recommended Store Products'}
                     </h4>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -8,9 +8,13 @@ export { CheckoutModal } from './CheckoutModal';
 export { KHQRModal } from './KHQRModal';
 export { OrderSuccessModal } from './OrderSuccessModal';
 export { AISkincareAdvisorModal } from './AISkincareAdvisorModal';
+export { FaceSkinScannerModal } from './FaceSkinScannerModal';
 export { WishlistDrawer } from './WishlistDrawer';
 export { BeautyTipsSection } from './BeautyTipsSection';
 export { Footer } from './Footer';
 export { ChatBotWidget } from './ChatBotWidget';
-export { FaceScanModal } from './FaceScanModal';
-
+export { GeminiDebugIndicator } from './GeminiDebugIndicator';
+export { MyPointsModal } from './MyPointsModal';
+export { ScanComingSoonModal } from './ScanComingSoonModal';
+export * from './auth';
+export * from './AdminTaskEditor';

@@ -1,14 +1,15 @@
 import { Order } from '../types';
 
-export function formatTelegramInvoice(order: Order, _isPaid = true, hasReceipt = false): string {
+export function formatTelegramInvoice(order: Order, _isPaid = true, _hasReceipt = false): string {
   const addressParts = [
     order.customerInfo.cityProvince,
     order.customerInfo.districtSangkat,
+    order.customerInfo.sangkatCommune,
     order.customerInfo.addressDetail,
   ].filter(Boolean);
 
   const fullAddress = addressParts.join(', ') || 'មិនមាន';
-  const notesText = order.customerInfo.notes ? `\n📝 ចំណាំ: ${order.customerInfo.notes}` : '';
+  const notesText = order.customerInfo.notes || 'មិនមាន';
 
   const itemsText = order.items
     .map((item, index) => {
@@ -17,18 +18,24 @@ export function formatTelegramInvoice(order: Order, _isPaid = true, hasReceipt =
     })
     .join('\n');
 
-  const receiptText = hasReceipt
-    ? '\n📸 វិក័យបត្ររូបភាព: បាន Upload និងចម្លងរូបភាពរួចរាល់ (សូមចុច Paste/បិទភ្ជាប់ រូបភាពផ្ញើចូល Chat)'
-    : '';
+  const nowStr = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
-  return `👤 ឈ្មោះ: ${order.customerInfo.fullName}
-📍 ទីតាំង: ${fullAddress}${notesText}
-📞 លេខទូរស័ព្ទ: ${order.customerInfo.phone}
+  return `👤 ឈ្មោះ៖ ${order.customerInfo.fullName}
+📞 លេខទូរស័ព្ទ៖ ${order.customerInfo.phone}
 
-🛍️ ទំនិញដែលមានទិញ:
+📍 ទីតាំង៖ ${fullAddress}
+
+🛍️ ទំនិញដែលបានទិញ៖
 ${itemsText}
 
-💵 សរុបទឹកប្រាក់: $${order.totalUsd.toFixed(2)} (៛${order.totalKhr.toLocaleString()})${receiptText}`;
+💵 សរុបទឹកប្រាក់៖ $${order.totalUsd.toFixed(2)} (៛${order.totalKhr.toLocaleString()})
+
+📝 កំណត់សម្គាល់របស់អតិថិជន៖ ${notesText}
+
+⏰ Upload Date / Time: ${nowStr}
+
+💳 Payment Status: Pending Verification
+📦 Order Preparation: Pending`;
 }
 
 export async function copyImageToClipboard(dataUrl: string): Promise<boolean> {
@@ -41,18 +48,57 @@ export async function copyImageToClipboard(dataUrl: string): Promise<boolean> {
       ]);
       return true;
     }
-  } catch (err) {
-    console.error('Could not copy image to clipboard', err);
+  } catch {
+    // Clipboard copy ignore
   }
   return false;
 }
 
-export async function openTelegramAdmin(order: Order, isPaid = true, receiptImageDataUrl?: string | null) {
-  const hasReceipt = Boolean(receiptImageDataUrl);
-  if (receiptImageDataUrl) {
-    await copyImageToClipboard(receiptImageDataUrl);
+export async function sendReceiptToTelegramBackend(
+  order: Order,
+  receiptDataUrl?: string | null,
+  receiptFileName?: string | null
+): Promise<{ success: boolean; message?: string; warning?: string }> {
+  try {
+    const uploadTime = new Date().toLocaleString('km-KH', { timeZone: 'Asia/Phnom_Penh' });
+    const response = await fetch('/api/send-receipt', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        order,
+        receiptDataUrl: receiptDataUrl || null,
+        receiptFileName: receiptFileName || null,
+        uploadTime,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to send receipt to Telegram Bot');
+    }
+    return { success: true, message: data.message, warning: data.warning };
+  } catch (err: any) {
+    console.error('sendReceiptToTelegramBackend error:', err);
+    return { success: false, message: err.message || 'Error connecting to server' };
   }
-  const message = formatTelegramInvoice(order, isPaid, hasReceipt);
-  const telegramUrl = `https://t.me/Lumimeiadmin?text=${encodeURIComponent(message)}`;
-  window.open(telegramUrl, '_blank');
+}
+
+export async function openTelegramAdmin(order: Order, isPaid = true, receiptImageDataUrl?: string | null, receiptFileName?: string | null) {
+  // First attempt to send directly via website backend Telegram Bot API
+  const backendResult = await sendReceiptToTelegramBackend(order, receiptImageDataUrl, receiptFileName);
+  
+  if (backendResult.warning) {
+    // Fallback to opening direct Telegram chat if secrets are not configured yet
+    const hasReceipt = Boolean(receiptImageDataUrl);
+    if (receiptImageDataUrl) {
+      await copyImageToClipboard(receiptImageDataUrl);
+    }
+    const message = formatTelegramInvoice(order, isPaid, hasReceipt);
+    const telegramUrl = `https://t.me/Lumimeiadmin?text=${encodeURIComponent(message)}`;
+    window.open(telegramUrl, '_blank');
+  }
+
+  return backendResult;
 }

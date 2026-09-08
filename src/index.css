@@ -1,3 +1,33 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+body {
+  font-family: 'Battambang', 'Open Sans', system-ui, -apple-system, sans-serif;
+}
+
+.font-koulen {
+  font-family: 'Koulen', 'Battambang', 'Open Sans', sans-serif;
+}
+
+.font-opensans {
+  font-family: 'Open Sans', 'Battambang', sans-serif;
+}
+
+.font-battambang {
+  font-family: 'Battambang', 'Khmer OS Battambang', 'Open Sans', sans-serif;
+}
+
+@keyframes scanLine {
+  0% {
+    top: 5%;
+  }
+  50% {
+    top: 90%;
+  }
+  100% {
+    top: 5%;
+  }
+}
+
+.animate-scanLine {
+  animation: scanLine 2.5s ease-in-out infinite;
+}

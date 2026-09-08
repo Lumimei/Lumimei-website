@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle, QrCode, Loader2, Upload, Image, Send, Check } from 'lucide-react';
+import { X, CheckCircle, QrCode, Loader2, Upload, Image, Send, Check, FileText } from 'lucide-react';
 import { Order, Language } from '../types';
 import { openTelegramAdmin } from '../utils/telegram';
 
@@ -16,8 +16,6 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
   onClose,
   onPaymentSuccess,
 }) => {
-  if (!order) return null;
-
   const [timeLeft, setTimeLeft] = useState(300); // 5 minutes timer
   const [isSimulating, setIsSimulating] = useState(false);
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
@@ -30,6 +28,8 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
     }, 1000);
     return () => clearInterval(timer);
   }, [timeLeft]);
+
+  if (!order) return null;
 
   const formatTimer = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -52,11 +52,14 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
   const handleSimulatePayment = async () => {
     setIsSimulating(true);
 
-    setTimeout(async () => {
+    try {
+      await openTelegramAdmin(order, true, receiptImage, receiptFileName);
+    } catch (err) {
+      console.error('Failed sending receipt to Telegram:', err);
+    } finally {
       setIsSimulating(false);
-      await openTelegramAdmin(order, true, receiptImage);
       onPaymentSuccess(order.id);
-    }, 600);
+    }
   };
 
   return (
@@ -95,10 +98,10 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
             </h4>
             <div className="flex justify-center items-baseline gap-2 pt-1">
               <span className="text-2xl font-black text-emerald-700">
-                ៛{order.totalKhr.toLocaleString()}
+                ${order.totalUsd.toFixed(2)}
               </span>
               <span className="text-xs font-bold text-slate-500">
-                (${order.totalUsd.toFixed(2)})
+                (៛{order.totalKhr.toLocaleString()})
               </span>
             </div>
           </div>
@@ -131,7 +134,7 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
                 <Upload className="w-4 h-4 text-emerald-600" />
-                {language === 'km' ? 'upload វិក័យបត្ររូបភាព' : 'Upload Payment Receipt'}
+                {language === 'km' ? 'Upload រូបភាព ឬ PDF វិក័យបត្រ' : 'Upload Receipt (Image / PDF)'}
               </span>
               {receiptImage && (
                 <button
@@ -146,15 +149,21 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
 
             {receiptImage ? (
               <div className="flex items-center gap-3 p-2 bg-emerald-50 rounded-xl border border-emerald-200">
-                <img
-                  src={receiptImage}
-                  alt="Receipt Preview"
-                  className="w-12 h-12 object-cover rounded-lg border border-emerald-300 shadow-xs"
-                />
+                {receiptImage.startsWith('data:image/') ? (
+                  <img
+                    src={receiptImage}
+                    alt="Receipt Preview"
+                    className="w-12 h-12 object-cover rounded-lg border border-emerald-300 shadow-xs"
+                  />
+                ) : (
+                  <div className="w-12 h-12 rounded-lg bg-emerald-100 border border-emerald-300 flex items-center justify-center text-emerald-700">
+                    <FileText className="w-6 h-6" />
+                  </div>
+                )}
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold text-emerald-800 flex items-center gap-1">
                     <Check className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-                    {language === 'km' ? 'បាន Upload រូបភាពវិក័យបត្ររួចរាល់' : 'Receipt Uploaded'}
+                    {language === 'km' ? 'បាន Upload វិក័យបត្ររួចរាល់' : 'Receipt File Uploaded'}
                   </p>
                   <p className="text-[10px] text-slate-500 truncate">{receiptFileName}</p>
                 </div>
@@ -163,14 +172,14 @@ export const KHQRModal: React.FC<KHQRModalProps> = ({
               <label className="block w-full">
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp,application/pdf,image/*,.pdf"
                   onChange={handleImageUpload}
                   className="hidden"
                 />
                 <div className="w-full py-2.5 px-3 bg-slate-50 hover:bg-emerald-50/50 border-2 border-dashed border-slate-300 hover:border-emerald-400 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition text-slate-600 hover:text-emerald-700">
                   <Image className="w-4 h-4 text-emerald-600" />
                   <span className="text-xs font-bold">
-                    {language === 'km' ? 'ជ្រើសរើសរូបភាពវិក័យបត្រទូទាត់' : 'Select Receipt Image'}
+                    {language === 'km' ? 'ជ្រើសរើសរូបភាព ឬ File PDF វិក័យបត្រ' : 'Select Receipt (JPG, PNG, WEBP, PDF)'}
                   </span>
                 </div>
               </label>

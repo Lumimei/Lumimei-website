@@ -1,40 +1,41 @@
 import React from 'react';
-import { Sparkles, ShieldCheck, Truck, QrCode, ArrowRight, Camera } from 'lucide-react';
+import { Send, ShoppingBag } from 'lucide-react';
 import { Language } from '../types';
 import riceMaskImg from '../assets/images/lumimei_rice_mask_1785063133244.jpg';
 
 interface HeroBannerProps {
   language: Language;
-  onOpenAiAdvisor: () => void;
-  onOpenFaceScan: () => void;
-  onSelectTag: (tag: string) => void;
+  onOpenAiAdvisor?: () => void;
+  onSelectTag?: (tag: string) => void;
+  onNavigateToProducts?: () => void;
 }
 
 export const HeroBanner: React.FC<HeroBannerProps> = ({
   language,
-  onOpenAiAdvisor,
-  onOpenFaceScan,
-  onSelectTag,
+  onNavigateToProducts,
 }) => {
-  const popularTags = [
-    { labelKm: 'Lumimei Clay Mask', labelEn: 'Lumimei Clay Mask', labelZh: 'Lumimei 泥膜', tag: 'Lumimei' },
-    { labelKm: 'Lumimei ប្រេងដូង', labelEn: 'Lumimei Coconut Oil', labelZh: 'Lumimei 椰子油', tag: 'sunscreen' },
-    { labelKm: 'Lumimei សេរ៉ូម', labelEn: 'Lumimei Serum', labelZh: 'Lumimei 精华液', tag: 'serum' },
-    { labelKm: 'Lumimei សាប៊ូ', labelEn: 'Lumimei Soap', labelZh: 'Lumimei 香皂', tag: 'mask' },
-    { labelKm: 'ខ្មៅដៃគូសចិញ្ចើម', labelEn: 'Eyebrow Pencil', labelZh: '眉笔', tag: 'makeup' },
-  ];
+  const handleChatConsultation = () => {
+    window.open('https://t.me/Lumimeiadmin', '_blank');
+  };
+
+  const handleOrderNow = () => {
+    if (onNavigateToProducts) {
+      onNavigateToProducts();
+    } else {
+      window.location.hash = '#products';
+    }
+  };
 
   return (
-    <div className="relative overflow-hidden bg-white rounded-2xl border-2 border-emerald-600/30 p-5 sm:p-7 mt-1.5 mb-6 shadow-md">
+    <div className="relative overflow-hidden bg-white rounded-2xl border-2 border-emerald-600/30 p-4 sm:p-7 mt-1.5 mb-6 shadow-md">
       {/* Decorative top-right green accent wave */}
       <div className="absolute -top-16 -right-16 w-64 h-64 bg-emerald-50 rounded-full blur-2xl pointer-events-none" />
       <div className="absolute -bottom-16 -left-16 w-64 h-64 bg-emerald-100/40 rounded-full blur-2xl pointer-events-none" />
 
       <div className="relative z-10 grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
         {/* Text Content */}
-        <div className="md:col-span-7 space-y-4">
+        <div className="md:col-span-7 space-y-3.5 sm:space-y-4">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-700 text-white text-xs font-semibold shadow-xs">
-            <Sparkles className="w-3.5 h-3.5 text-emerald-200" />
             <span className="font-opensans" style={{ fontFamily: "'Open Sans', 'Battambang', sans-serif" }}>
               {language === 'km'
                 ? 'ប្រូម៉ូសិនពិសេសប្រចាំខែ បញ្ចុះតម្លៃរហូតដល់ 30%'
@@ -47,7 +48,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
           <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight">
             {language === 'km' ? (
               <span className="tracking-normal">
-                <span className="font-opensans font-bold" style={{ fontFamily: "'Open Sans', sans-serif" }}>Lumimei</span> <span className="text-emerald-700 font-battambang">អ្នកឯកទេសថែរក្សាមុខមុនគ្រប់ប្រភេទ</span>
+                <span className="font-opensans font-bold" style={{ fontFamily: "'Open Sans', sans-serif", color: '#009966' }}>Lumimei</span> <span className="text-emerald-700 font-battambang">អ្នកឯកទេសថែរក្សាមុខមុនគ្រប់ប្រភេទ</span>
               </span>
             ) : language === 'zh' ? (
               <span className="font-opensans">
@@ -62,47 +63,74 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
 
           <div className="text-slate-600 text-xs sm:text-sm leading-relaxed max-w-xl font-opensans">
             {language === 'km' ? (
-              <div className="space-y-1.5">
-                <p className="font-semibold text-slate-800" style={{ fontSize: '23px' }}>មិនថាបងប្អូនកំពុងជួបបញ្ហា៖</p>
-                <ul className="space-y-0.5 text-slate-700 pl-1">
-                  <li style={{ fontSize: '17px' }}>• ស្បែកមុខខ្មៅស្រអាប់ មិនភ្លឺថ្លា និងរន្ធញើសធំ</li>
-                  <li style={{ fontSize: '17px' }}>• ស្បែកមុខរោល ងាយប្រតិកម្ម ឬរលាក</li>
-                  <li style={{ fontSize: '17px' }}>• សរសៃក្រហមលើផ្ទៃមុខ</li>
+              <div className="space-y-2 text-slate-700">
+                <p className="font-semibold text-slate-900 leading-snug" style={{ fontSize: '18px' }}>
+                  តើបងប្អូនកំពុងជួបបញ្ហាស្បែកមុខ ដែលធ្វើឱ្យបាត់បង់ទំនុកចិត្តមែនទេ? មិនថាបងប្អូនកំពុងជួបបញ្ហា៖
+                </p>
+                <ul className="space-y-1 text-slate-800 pl-1 font-medium" style={{ fontSize: '16px' }}>
+                  <li>* មុនគ្រប់ប្រភេទ (មុនក្បាលខ្មៅ, មុនរលាក, មុនសាច់...)</li>
+                  <li>* ស្បែកមុខខ្មៅស្រអាប់ មិនភ្លឺថ្លា និងរន្ធញើសធំ</li>
+                  <li>* ស្បែកមុខរោល ងាយប្រតិកម្ម ឬរលាក</li>
+                  <li>* សរសៃក្រហមលើផ្ទៃមុខ</li>
                 </ul>
-                <p className="pt-1 text-slate-600" style={{ fontSize: '17px' }}>
-                  យើងក៏មានចំណេះដឹង និងបទពិសោធន៍ក្នុងការថែទាំបញ្ហាស្បែកទាំងនេះផងដែរ។ យើងនឹងជួយណែនាំវិធីថែទាំឱ្យសមស្របទៅតាមស្ថានភាពស្បែករបស់បងប្អូនម្នាក់ៗ។
+                <p className="pt-1.5 text-emerald-900 font-semibold leading-relaxed" style={{ fontSize: '16px' }}>
+                  Lumimei នៅទីនេះដើម្បីជួយបងប្អូនដើម្បទទួលបានលទ្ធផលប្រសិទ្ធខ្ពស់ សន្សំលុយនិងសន្សំពេល Lumimei ថែស្បែកមុខបងប្អូនដោយក្តីស្រលាញ់បំផុត!
                 </p>
               </div>
             ) : language === 'zh' ? (
-              <p>
-                无论您面临暗沉、毛孔粗大、过敏红肿或红血丝等肌肤问题，我们拥有专业经验与知识，为您提供量身定制的针对性护肤指导。
-              </p>
+              <div className="space-y-2">
+                <p className="font-bold text-slate-900">
+                  您是否正面临让您失去信心的面部肌肤困扰？无论您正经历：
+                </p>
+                <ul className="space-y-1 text-slate-800 pl-1">
+                  <li>* 各类痘痘（黑头、炎性痘痘、脂肪粒等）</li>
+                  <li>* 皮肤暗沉无光泽、毛孔粗大</li>
+                  <li>* 皮肤发红、易过敏或发炎</li>
+                  <li>* 面部红血丝明显</li>
+                </ul>
+                <p className="pt-1 text-emerald-800 font-semibold">
+                  Lumimei 陪伴在您身边，助您获得高效成果，省钱省时，Lumimei 倾注全心守护您的美丽肌肤！
+                </p>
+              </div>
             ) : (
-              <p>
-                Whether you struggle with dullness, enlarged pores, sensitive breakouts, inflammation, or redness—our skin care experts provide personalized consultation and guidance tailored to your unique skin condition.
-              </p>
+              <div className="space-y-2">
+                <p className="font-bold text-slate-900">
+                  Are you struggling with skin issues affecting your confidence? Whether dealing with:
+                </p>
+                <ul className="space-y-1 text-slate-800 pl-1">
+                  <li>* All types of acne (blackheads, inflammatory acne, textured bumps...)</li>
+                  <li>* Dull skin tone, lack of radiance, and enlarged pores</li>
+                  <li>* Sensitive, reactive, or irritated skin</li>
+                  <li>* Facial redness & visible broken capillaries</li>
+                </ul>
+                <p className="pt-1 text-emerald-800 font-semibold">
+                  Lumimei is here to deliver visible, highly effective results while saving your time and money—caring for your skin with the utmost love!
+                </p>
+              </div>
             )}
           </div>
 
-          {/* CTA Buttons - Square Buttons */}
-          <div className="flex items-center gap-3 sm:gap-4 pt-2">
+          {/* CTA Buttons - 2 side-by-side buttons in 1 row on mobile & desktop */}
+          <div className="grid grid-cols-2 gap-2 sm:gap-3 pt-2 max-w-md">
             <button
-              onClick={onOpenFaceScan}
-              className="w-28 sm:w-32 h-28 sm:h-32 aspect-square bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-2xl shadow-md hover:shadow-lg transition flex flex-col items-center justify-center gap-2 p-3 text-center cursor-pointer transform hover:-translate-y-1 shrink-0"
+              id="hero-btn-chat-consult"
+              onClick={handleChatConsultation}
+              className="px-3 sm:px-4 py-2.5 sm:py-3 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold rounded-xl sm:rounded-2xl shadow-md hover:shadow-lg transition flex items-center justify-center gap-1.5 sm:gap-2 text-center cursor-pointer transform hover:-translate-y-0.5"
             >
-              <Camera className="w-7 h-7 sm:w-8 sm:h-8 text-white animate-pulse" />
-              <span className="text-xs sm:text-sm leading-tight">
-                {language === 'km' ? 'Scan មុខ វិភាគស្បែក' : language === 'zh' ? 'AI 面部扫描' : 'AI Face Scan'}
+              <Send className="w-4 h-4 text-emerald-100 shrink-0" />
+              <span className="text-[12px] sm:text-sm font-extrabold whitespace-nowrap">
+                {language === 'km' ? 'ឆាត់មកពិភាក្សាស្បែកមុខ' : language === 'zh' ? '联系在线咨询' : 'Chat Consultation'}
               </span>
             </button>
 
             <button
-              onClick={onOpenAiAdvisor}
-              className="w-28 sm:w-32 h-28 sm:h-32 aspect-square bg-white hover:bg-emerald-50 text-emerald-800 border-2 border-emerald-600 font-bold rounded-2xl shadow-sm hover:shadow-md transition flex flex-col items-center justify-center gap-2 p-3 text-center cursor-pointer transform hover:-translate-y-1 shrink-0"
+              id="hero-btn-order-now"
+              onClick={handleOrderNow}
+              className="px-3 sm:px-4 py-2.5 sm:py-3 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-bold rounded-xl sm:rounded-2xl shadow-md hover:shadow-lg transition flex items-center justify-center gap-1.5 sm:gap-2 text-center cursor-pointer transform hover:-translate-y-0.5"
             >
-              <Sparkles className="w-7 h-7 sm:w-8 sm:h-8 text-emerald-700" />
-              <span className="text-xs sm:text-sm leading-tight text-emerald-900">
-                {language === 'km' ? 'ពិគ្រោះស្បែកមុខ' : language === 'zh' ? 'AI 美肤测验' : 'AI Skincare Quiz'}
+              <ShoppingBag className="w-4 h-4 text-amber-100 shrink-0" />
+              <span className="text-[12px] sm:text-sm font-extrabold whitespace-nowrap">
+                {language === 'km' ? 'បញ្ជាទិញឥឡូវនេះ' : language === 'zh' ? '立即订购' : 'Order Now'}
               </span>
             </button>
           </div>
@@ -117,7 +145,6 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
               className="w-full h-full object-cover transform hover:scale-105 transition duration-500"
               referrerPolicy="no-referrer"
               onError={(e) => {
-                // If postimg link fails, fallback to local image asset
                 const target = e.currentTarget;
                 if (target.src !== riceMaskImg) {
                   target.src = riceMaskImg;
@@ -134,35 +161,6 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                   : language === 'zh'
                   ? 'Lumimei 深层净肤矿物泥膜'
                   : 'Lumimei Deep Purifying Clay Mask'}
-              </p>
-            </div>
-          </div>
-
-          {/* Floating Badges */}
-          <div className="absolute -bottom-2 sm:-bottom-3 left-1 sm:-left-2 bg-white/95 backdrop-blur-xs p-2 sm:p-2.5 rounded-xl shadow-md border border-emerald-100 flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs">
-            <div className="p-1 sm:p-1.5 bg-emerald-100 text-emerald-700 rounded-lg">
-              <QrCode className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </div>
-            <div>
-              <p className="font-bold text-slate-800">
-                {language === 'km' ? 'ទូទាត់ប្រាក់ KHQR' : language === 'zh' ? 'KHQR 扫码支付' : 'Instant KHQR'}
-              </p>
-              <p className="text-[9px] sm:text-[10px] text-slate-500">
-                {language === 'km' ? 'ស្កេនបានគ្រប់ធនាគារ' : language === 'zh' ? '支持全柬各大银行' : 'Works with all banks'}
-              </p>
-            </div>
-          </div>
-
-          <div className="absolute -top-2 right-1 sm:-right-2 bg-white/95 backdrop-blur-xs p-2 sm:p-2.5 rounded-xl shadow-md border border-emerald-100 flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs">
-            <div className="p-1 sm:p-1.5 bg-teal-100 text-teal-700 rounded-lg">
-              <Truck className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </div>
-            <div>
-              <p className="font-bold text-slate-800">
-                {language === 'km' ? 'ដឹកលឿន ២៤ខេត្តក្រុង' : language === 'zh' ? '全柬快运' : 'Express Delivery'}
-              </p>
-              <p className="text-[9px] sm:text-[10px] text-slate-500">
-                {language === 'km' ? 'ភ្នំពេញ ដឹកក្នុងថ្ងៃ' : language === 'zh' ? '金边当日送达' : 'Phnom Penh Same-day'}
               </p>
             </div>
           </div>

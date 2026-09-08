@@ -15,7 +15,8 @@ import {
   ShieldCheck,
   Truck,
   RotateCcw,
-  Tag
+  Tag,
+  Flame
 } from 'lucide-react';
 
 interface ProductsPageProps {
@@ -119,6 +120,65 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
               : 'Back to Home'}
           </span>
         </button>
+      </div>
+
+      {/* Category Filter Tabs Bar */}
+      <div className="bg-white rounded-2xl p-3 sm:p-4 border border-emerald-100 shadow-2xs">
+        <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <Filter className="w-4 h-4 text-emerald-700" />
+            <span className="text-xs sm:text-sm font-bold text-slate-800">
+              {language === 'km' ? 'ជម្រើសប្រភេទផលិតផល & ប្រូម៉ូសិន' : language === 'zh' ? '商品分类与特惠' : 'Categories & Promotions'}
+            </span>
+          </div>
+          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+            {language === 'km' ? `សរុប ${products.length} មុខ` : `${products.length} Items`}
+          </span>
+        </div>
+
+        {/* Categories Scrollable Pills */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-emerald-200">
+          {CATEGORIES.map((cat) => {
+            const isSelected = selectedCategory === cat.id;
+            const isPromoCat = cat.id === 'promotion';
+            const isBestSellerCat = cat.id === 'best-seller' || cat.id === 'bestseller';
+            const label =
+              language === 'km'
+                ? cat.nameKm
+                : language === 'zh'
+                ? cat.nameZh || cat.name
+                : cat.name;
+
+            return (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategory(cat.id)}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer shrink-0 border ${
+                  isSelected
+                    ? isPromoCat
+                      ? 'bg-rose-600 text-white border-rose-600 shadow-md ring-2 ring-rose-300'
+                      : isBestSellerCat
+                      ? 'bg-amber-600 text-white border-amber-600 shadow-md ring-2 ring-amber-300'
+                      : 'bg-emerald-700 text-white border-emerald-700 shadow-md ring-2 ring-emerald-300'
+                    : isPromoCat
+                    ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 hover:border-rose-300'
+                    : isBestSellerCat
+                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 hover:border-amber-300'
+                    : 'bg-slate-50 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border-slate-200 hover:border-emerald-300'
+                }`}
+              >
+                {isPromoCat ? (
+                  <Tag className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-rose-600'}`} />
+                ) : isBestSellerCat ? (
+                  <Flame className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-amber-600'}`} />
+                ) : (
+                  <Sparkles className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-emerald-600'}`} />
+                )}
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div>

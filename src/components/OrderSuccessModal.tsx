@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CheckCircle2, MapPin, Printer, ShoppingBag, Truck, Send, Upload, Check, Image as ImageIcon } from 'lucide-react';
+import { CheckCircle2, MapPin, Printer, ShoppingBag, Truck, Send, Gift, Sparkles, X, Home } from 'lucide-react';
 import { Order, Language } from '../types';
 import { openTelegramAdmin } from '../utils/telegram';
 
@@ -14,30 +14,31 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({
   language,
   onClose,
 }) => {
-  if (!order) return null;
+  const [isSendingTelegram, setIsSendingTelegram] = useState(false);
+  const [telegramSentStatus, setTelegramSentStatus] = useState<string | null>(null);
 
-  const [receiptImage, setReceiptImage] = useState<string | null>(null);
-  const [receiptFileName, setReceiptFileName] = useState<string | null>(null);
+  if (!order) return null;
 
   const handlePrint = () => {
     window.print();
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setReceiptFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = () => {
-        setReceiptImage(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
   const handleSendTelegram = async () => {
-    const isPaid = order.paymentStatus === 'paid' || order.paymentMethod === 'khqr';
-    await openTelegramAdmin(order, isPaid, receiptImage);
+    setIsSendingTelegram(true);
+    setTelegramSentStatus(null);
+    try {
+      const isPaid = order.paymentStatus === 'paid' || order.paymentMethod === 'khqr';
+      const result = await openTelegramAdmin(order, isPaid, null, null);
+      if (result.success) {
+        setTelegramSentStatus(language === 'km' ? 'បានផ្ញើទៅ Telegram Bot រួចរាល់!' : 'Sent to Telegram Bot!');
+      } else if (result.warning) {
+        setTelegramSentStatus(language === 'km' ? 'បានបើក Telegram Admin' : 'Opened Telegram Admin');
+      }
+    } catch (err) {
+      console.error('Error sending telegram:', err);
+    } finally {
+      setIsSendingTelegram(false);
+    }
   };
 
   return (
@@ -87,6 +88,29 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({
             </div>
           </div>
 
+          {/* Points Earned Banner */}
+          {Math.floor(order.subtotalUsd / 10) > 0 && (
+            <div className="p-3.5 bg-gradient-to-r from-amber-50 to-amber-100/60 border border-amber-200/80 rounded-2xl flex items-center justify-between text-amber-900 shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center font-black text-sm shrink-0 shadow-xs">
+                  <Gift className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="font-extrabold text-amber-950 text-xs flex items-center gap-1">
+                    <span>{language === 'km' ? `អ្នកទទួលបាន +${Math.floor(order.subtotalUsd / 10)} ពិន្ទុ!` : `You Earned +${Math.floor(order.subtotalUsd / 10)} Points!`}</span>
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                  </p>
+                  <p className="text-[10px] text-amber-800 font-medium">
+                    {language === 'km' ? 'ពិន្ទុត្រូវបានបន្ថែមទៅក្នុង "ពិន្ទុខ្ញុំ" រួចរាល់' : 'Points added to "My Points" automatically'}
+                  </p>
+                </div>
+              </div>
+              <span className="px-2.5 py-1 bg-amber-500 text-white font-extrabold text-xs rounded-xl shadow-2xs shrink-0">
+                +{Math.floor(order.subtotalUsd / 10)} pts
+              </span>
+            </div>
+          )}
+
           {/* Ordered Items Summary */}
           <div className="space-y-2">
             <h4 className="font-bold text-slate-800 border-b border-slate-100 pb-1">
@@ -115,7 +139,9 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({
               {language === 'km' ? 'ព័ត៌មានអ្នកទទួល' : 'Customer & Delivery Info'}
             </p>
             <p className="text-slate-700 font-semibold">{order.customerInfo.fullName} • {order.customerInfo.phone}</p>
-            <p className="text-slate-500">{order.customerInfo.districtSangkat}, {order.customerInfo.cityProvince}</p>
+            <p className="text-slate-500">
+              {[order.customerInfo.sangkatCommune, order.customerInfo.districtSangkat, order.customerInfo.cityProvince].filter(Boolean).join(', ')}
+            </p>
             {order.customerInfo.addressDetail && (
               <p className="text-slate-500 italic">{order.customerInfo.addressDetail}</p>
             )}
@@ -146,69 +172,28 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({
             </div>
           </div>
 
-          {/* Upload Payment Receipt Image Box */}
-          <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                <Upload className="w-3.5 h-3.5 text-emerald-600" />
-                {language === 'km' ? 'upload វិក័យបត្ររូបភាព' : 'Upload Receipt Image'}
-              </span>
-              {receiptImage && (
-                <button
-                  type="button"
-                  onClick={() => { setReceiptImage(null); setReceiptFileName(null); }}
-                  className="text-[10px] text-rose-500 hover:text-rose-700 font-semibold cursor-pointer"
-                >
-                  {language === 'km' ? 'លុប' : 'Remove'}
-                </button>
-              )}
+          {telegramSentStatus && (
+            <div className="p-2.5 bg-sky-50 text-sky-800 text-xs font-bold rounded-xl border border-sky-200 text-center animate-fade-in">
+              {telegramSentStatus}
             </div>
-
-            {receiptImage ? (
-              <div className="flex items-center gap-2.5 p-2 bg-emerald-50 rounded-xl border border-emerald-200">
-                <img src={receiptImage} alt="Receipt" className="w-12 h-12 object-cover rounded-lg border border-emerald-300" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-emerald-800 flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-                    {language === 'km' ? 'បាន Upload រូបភាពរួចរាល់' : 'Receipt Attached'}
-                  </p>
-                  <p className="text-[10px] text-slate-500 truncate">{receiptFileName}</p>
-                </div>
-              </div>
-            ) : (
-              <label className="block w-full">
-                <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                <div className="w-full py-2 px-3 bg-white hover:bg-emerald-50 border border-dashed border-slate-300 hover:border-emerald-400 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition text-slate-600 text-xs font-bold">
-                  <ImageIcon className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>{language === 'km' ? 'ជ្រើសរើសរូបភាពវិក័យបត្រទូទាត់' : 'Select Receipt Image'}</span>
-                </div>
-              </label>
-            )}
-          </div>
+          )}
         </div>
 
         {/* Modal Actions */}
-        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row gap-2">
+        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-row gap-2.5 items-center">
           <button
-            onClick={handleSendTelegram}
-            className="flex-1 py-2.5 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+            onClick={onClose}
+            className="flex-1 py-2.5 bg-slate-200 hover:bg-slate-300 border border-slate-300 text-slate-700 rounded-xl font-bold text-xs sm:text-sm transition flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            <Send className="w-4 h-4" />
-            <span>{language === 'km' ? 'ផ្ញើទៅ Telegram' : 'Send to Telegram'}</span>
-          </button>
-          <button
-            onClick={handlePrint}
-            className="flex-1 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-          >
-            <Printer className="w-4 h-4 text-slate-500" />
-            <span>{language === 'km' ? 'បោះពុម្ព' : 'Print'}</span>
+            <X className="w-4 h-4 text-slate-600" />
+            <span>{language === 'km' ? 'លុបចោល' : 'Cancel'}</span>
           </button>
           <button
             onClick={onClose}
-            className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer"
+            className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs sm:text-sm transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
           >
-            <ShoppingBag className="w-4 h-4" />
-            <span>{language === 'km' ? 'បន្តទិញទំនិញ' : 'Continue'}</span>
+            <Home className="w-4 h-4" />
+            <span>{language === 'km' ? 'ត្រលប់ទៅទំព័រដើមវិញ' : 'Back to Home'}</span>
           </button>
         </div>
       </div>

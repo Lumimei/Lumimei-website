@@ -21,7 +21,10 @@ import {
   Tag,
   Gift,
   PhoneCall,
+  Mail,
+  BookOpen,
   Camera,
+  Scan,
   Award,
   Star,
   Target,
@@ -29,10 +32,19 @@ import {
   ChevronRight,
   ExternalLink,
   Ticket,
-  MessageSquare
+  MessageSquare,
+  LogIn,
+  UserPlus,
+  User,
+  LogOut,
+  LayoutDashboard,
+  Settings,
+  Trash2,
+  Plus
 } from 'lucide-react';
 import { CATEGORIES } from '../data/products';
 import { Language } from '../types';
+import { useAuth } from '../context/AuthContext';
 
 interface HeaderProps {
   searchQuery: string;
@@ -44,13 +56,18 @@ interface HeaderProps {
   onOpenCart: () => void;
   onOpenWishlist: () => void;
   onOpenAiAdvisor: () => void;
-  onOpenFaceScan: () => void;
+  onOpenSkinScan?: () => void;
+  onOpenPoints?: () => void;
   language: Language;
   setLanguage: (lang: Language) => void;
   totalUsd: number;
-  currentPage?: 'home' | 'products';
+  currentPage?: 'home' | 'products' | 'phone-login' | 'verify-phone' | 'complete-profile' | 'dashboard' | 'account' | 'admin';
   onNavigateToHome?: () => void;
   onNavigateToProducts?: () => void;
+  onNavigateToPhoneLogin?: (mode?: 'login' | 'register') => void;
+  onNavigateToDashboard?: () => void;
+  onNavigateToAccount?: () => void;
+  onNavigateToAdmin?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -63,18 +80,66 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenCart,
   onOpenWishlist,
   onOpenAiAdvisor,
-  onOpenFaceScan,
+  onOpenSkinScan,
+  onOpenPoints,
   language,
   setLanguage,
   totalUsd,
   currentPage = 'home',
   onNavigateToHome,
   onNavigateToProducts,
+  onNavigateToPhoneLogin,
+  onNavigateToDashboard,
+  onNavigateToAccount,
+  onNavigateToAdmin,
 }) => {
+  const { currentUser, userProfile, logout } = useAuth();
+  const userPhoneNumber = String(userProfile?.phoneNumber || currentUser?.phoneNumber || '');
+  const isAdmin =
+    userProfile?.role === 'super_admin' ||
+    userProfile?.role === 'admin' ||
+    userProfile?.role === 'superadmin' ||
+    Boolean(userPhoneNumber && userPhoneNumber.includes('11223355')) ||
+    userPhoneNumber === '+85511223355';
+
+  const [guestPoints, setGuestPoints] = useState<number>(() => {
+    return Number(localStorage.getItem('lumimei_guest_points') || '0');
+  });
+
+  useEffect(() => {
+    const handlePointsUpdated = () => {
+      setGuestPoints(Number(localStorage.getItem('lumimei_guest_points') || '0'));
+    };
+    window.addEventListener('pointsUpdated', handlePointsUpdated);
+    return () => window.removeEventListener('pointsUpdated', handlePointsUpdated);
+  }, []);
+
+  const currentPoints = userProfile?.points !== undefined ? userProfile.points : guestPoints;
   const [showShareModal, setShowShareModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [bellActive, setBellActive] = useState(true);
   const [showBellNoticeModal, setShowBellNoticeModal] = useState(false);
+  const [showReviewsModal, setShowReviewsModal] = useState(false);
+  const [showWriteReviewForm, setShowWriteReviewForm] = useState(false);
+  const [reviewsList, setReviewsList] = useState<
+    Array<{
+      id: string;
+      name: string;
+      rating: number;
+      date: string;
+      product: string;
+      comment: string;
+      verified: boolean;
+      photos?: string[];
+      userAvatar?: string;
+    }>
+  >([]);
+  const [newReviewComment, setNewReviewComment] = useState('');
+  const [newReviewRating, setNewReviewRating] = useState(0);
+  const [hoveredRating, setHoveredRating] = useState(0);
+  const [reviewPhotos, setReviewPhotos] = useState<string[]>([]);
+  const [selectedReviewPhoto, setSelectedReviewPhoto] = useState<string | null>(null);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
 
   // Top Menu Bar Modals State
   const [showAboutModal, setShowAboutModal] = useState(false);
@@ -85,8 +150,11 @@ export const Header: React.FC<HeaderProps> = ({
   const [showPromotionModal, setShowPromotionModal] = useState(false);
   const [showRewardsModal, setShowRewardsModal] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
+  const [showAccountDropdown, setShowAccountDropdown] = useState(false);
 
   const headerNavRef = useRef<HTMLElement>(null);
+  const mobileAccountDropdownRef = useRef<HTMLDivElement>(null);
+  const desktopAccountDropdownRef = useRef<HTMLDivElement>(null);
 
   // Click outside or Esc key closes main menu panel & dropdowns
   useEffect(() => {
@@ -95,12 +163,19 @@ export const Header: React.FC<HeaderProps> = ({
         setShowAboutDropdown(false);
         setIsMobileMenuOpen(false);
       }
+      const target = event.target as Node;
+      const isInsideMobile = mobileAccountDropdownRef.current && mobileAccountDropdownRef.current.contains(target);
+      const isInsideDesktop = desktopAccountDropdownRef.current && desktopAccountDropdownRef.current.contains(target);
+      if (!isInsideMobile && !isInsideDesktop) {
+        setShowAccountDropdown(false);
+      }
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setShowAboutDropdown(false);
         setIsMobileMenuOpen(false);
+        setShowAccountDropdown(false);
       }
     };
 
@@ -226,16 +301,6 @@ export const Header: React.FC<HeaderProps> = ({
       onClick: handleHomeClick,
     },
     {
-      id: 'about',
-      labelKm: 'អំពី Lumimei',
-      labelZh: '关于 Lumimei',
-      labelEn: 'About Lumimei',
-      icon: Info,
-      onClick: () => {
-        setShowAboutDropdown((prev) => !prev);
-      },
-    },
-    {
       id: 'product',
       labelKm: 'ផលិតផល',
       labelZh: '商品',
@@ -259,7 +324,7 @@ export const Header: React.FC<HeaderProps> = ({
       id: 'contact',
       labelKm: 'ទំនាក់ទំនង',
       labelZh: '联系我们',
-      labelEn: 'Contact',
+      labelEn: 'Contact Us',
       icon: PhoneCall,
       onClick: () => {
         setIsMobileMenuOpen(false);
@@ -291,10 +356,229 @@ export const Header: React.FC<HeaderProps> = ({
     setTimeout(() => setCopiedLink(false), 2500);
   };
 
+  const renderAccountDropdown = (ref: React.RefObject<HTMLDivElement | null>, visibilityClass: string = '') => {
+    const avatarUrl = userProfile?.photoURL || (userProfile as any)?.profilePhotoURL || currentUser?.photoURL;
+    const userDisplayName = userProfile?.fullName || userProfile?.displayName || currentUser?.displayName || '';
+    const formattedName = userDisplayName || 'អ្នកប្រើប្រាស់';
+
+    // First letter of user's display name or fallback
+    const firstLetter = userDisplayName
+      ? userDisplayName.trim().charAt(0).toUpperCase()
+      : 'U';
+
+    const userPhoneNumber = String(userProfile?.phoneNumber || currentUser?.phoneNumber || '');
+    const isAdmin =
+      userProfile?.role === 'super_admin' ||
+      userProfile?.role === 'admin' ||
+      userProfile?.role === 'superadmin' ||
+      Boolean(userPhoneNumber && userPhoneNumber.includes('11223355')) ||
+      userPhoneNumber === '+85511223355';
+
+    return (
+      <div className={`relative shrink-0 z-50 overflow-visible ${visibilityClass}`} ref={ref}>
+        {currentUser ? (
+          /* LOGGED IN: Render Profile Avatar + User Name Badge */
+          <div className="relative inline-block">
+            <button
+              onClick={() => setShowAccountDropdown((prev) => !prev)}
+              className="flex items-center gap-1.5 p-1 pr-2 bg-emerald-50 hover:bg-emerald-100/90 text-emerald-950 rounded-full border border-emerald-300 shadow-2xs hover:border-emerald-400 hover:shadow-xs transition cursor-pointer group"
+              title={formattedName}
+            >
+              <div className="w-8 h-8 rounded-full bg-emerald-700 text-white flex items-center justify-center font-bold text-sm border border-emerald-300 overflow-hidden shrink-0 ring-1 ring-emerald-500/30 shadow-2xs">
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt={formattedName}
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (target && target.style) {
+                        target.style.display = 'none';
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className="font-extrabold text-white text-sm font-opensans">{firstLetter}</span>
+                )}
+              </div>
+              <ChevronDown className={`w-3.5 h-3.5 text-emerald-700 shrink-0 transition-transform duration-200 ${showAccountDropdown ? 'rotate-180' : ''}`} />
+            </button>
+          </div>
+        ) : (
+          /* NOT LOGGED IN: Render "គណនីខ្ញុំ" Button */
+          <button
+            onClick={() => setShowAccountDropdown((prev) => !prev)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 rounded-full border border-emerald-300 shadow-2xs transition cursor-pointer"
+            title="គណនីខ្ញុំ"
+          >
+            <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
+              <User className="w-3.5 h-3.5 text-white" />
+            </div>
+            <span className="text-xs font-bold font-battambang text-emerald-900">
+              គណនីខ្ញុំ
+            </span>
+            <ChevronDown className={`w-3.5 h-3.5 text-emerald-700 transition-transform ${showAccountDropdown ? 'rotate-180' : ''}`} />
+          </button>
+        )}
+
+        {/* Account Dropdown Menu */}
+        {showAccountDropdown && (
+          <div
+            className="absolute right-0 w-52 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl border border-emerald-100 py-2 z-[9999] animate-in fade-in slide-in-from-top-2 duration-150"
+            style={{ top: 'calc(100% + 8px)' }}
+          >
+            {currentUser ? (
+              <>
+                {/* Account User Header Info */}
+                <div className="px-4 py-2 border-b border-slate-100 bg-emerald-50/50 flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0 overflow-hidden">
+                    {avatarUrl ? (
+                      <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                    ) : (
+                      <span>{firstLetter}</span>
+                    )}
+                  </div>
+                  <div className="overflow-hidden">
+                    <p className="text-xs font-bold text-emerald-900 truncate font-battambang">
+                      {formattedName}
+                    </p>
+                    {isAdmin && (
+                      <span className="text-[10px] font-extrabold text-amber-700 block">
+                        👑 Super Admin
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 0. ផ្ទាំងគ្រប់គ្រង Admin (Admin Portal - Shown if Admin) */}
+                {isAdmin && onNavigateToAdmin && (
+                  <button
+                    onClick={() => {
+                      setShowAccountDropdown(false);
+                      onNavigateToAdmin();
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-xs font-bold text-amber-950 bg-gradient-to-r from-amber-50 to-amber-100 hover:from-amber-100 hover:to-amber-200 border-b border-amber-200 flex items-center justify-between transition cursor-pointer font-battambang"
+                  >
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-amber-600" />
+                      <span>👑 ផ្ទាំងគ្រប់គ្រង Admin</span>
+                    </div>
+                    <span className="text-[10px] bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded font-black">
+                      PORTAL
+                    </span>
+                  </button>
+                )}
+
+                {/* 1. គណនីរបស់ខ្ញុំ (/dashboard) */}
+                <button
+                  onClick={() => {
+                    setShowAccountDropdown(false);
+                    if (onNavigateToDashboard) {
+                      onNavigateToDashboard();
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2.5 transition cursor-pointer font-battambang"
+                >
+                  <LayoutDashboard className="w-4 h-4 text-emerald-600" />
+                  <span>គណនីរបស់ខ្ញុំ</span>
+                </button>
+
+                {/* Reward & Points */}
+                <button
+                  onClick={() => {
+                    setShowAccountDropdown(false);
+                    if (onOpenPoints) {
+                      onOpenPoints();
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-xs font-semibold text-amber-800 hover:bg-amber-50 flex items-center justify-between transition cursor-pointer font-battambang"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Gift className="w-4 h-4 text-amber-600" />
+                    <span>Reward & ពិន្ទុ</span>
+                  </div>
+                  <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">
+                    {currentPoints} pts
+                  </span>
+                </button>
+
+                {/* 2. ការកំណត់ (/account) */}
+                <button
+                  onClick={() => {
+                    setShowAccountDropdown(false);
+                    if (onNavigateToAccount) {
+                      onNavigateToAccount();
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2.5 transition cursor-pointer font-battambang"
+                >
+                  <Settings className="w-4 h-4 text-emerald-600" />
+                  <span>ការកំណត់</span>
+                </button>
+
+                {/* 3. Logout (ចាកចេញ / Firebase signOut) */}
+                <button
+                  onClick={async () => {
+                    setShowAccountDropdown(false);
+                    try {
+                      await logout();
+                    } catch {
+                      // ignore
+                    }
+                    if (onNavigateToHome) {
+                      onNavigateToHome();
+                    } else {
+                      handleHomeClick();
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-xs font-semibold text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition cursor-pointer font-battambang border-t border-slate-100 mt-1"
+                >
+                  <LogOut className="w-4 h-4 text-red-500" />
+                  <span>Logout</span>
+                </button>
+              </>
+            ) : (
+              <div className="py-1">
+                {/* 1. ចូលប្រើប្រាស់ (Login) - Directly navigates to Account Login Page */}
+                <button
+                  onClick={() => {
+                    setShowAccountDropdown(false);
+                    if (onNavigateToPhoneLogin) {
+                      onNavigateToPhoneLogin('login');
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-xs font-bold text-emerald-800 hover:bg-emerald-50 flex items-center gap-2.5 transition cursor-pointer font-battambang"
+                >
+                  <LogIn className="w-4 h-4 text-emerald-700" />
+                  <span>ចូលប្រើប្រាស់</span>
+                </button>
+
+                {/* 2. បង្កើតគណនីថ្មី (Register) */}
+                <button
+                  onClick={() => {
+                    setShowAccountDropdown(false);
+                    if (onNavigateToPhoneLogin) {
+                      onNavigateToPhoneLogin('register');
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-emerald-700 flex items-center gap-2.5 transition cursor-pointer font-battambang"
+                >
+                  <UserPlus className="w-4 h-4 text-slate-500" />
+                  <span>បង្កើតគណនីថ្មី</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
       {/* Sticky Top Header Container */}
-      <header className="sticky top-0 z-50 bg-white shadow-md border-b border-emerald-100" ref={headerNavRef}>
+      <header className="sticky top-0 z-50 bg-white shadow-md border-b border-emerald-100 overflow-visible" ref={headerNavRef}>
         {/* Top Announcement & Quick Tools Bar */}
         <div className="bg-gradient-to-r from-emerald-700 via-teal-700 to-emerald-800 text-white text-xs py-1.5 px-3 sm:px-4">
           <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
@@ -369,114 +653,80 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Main Navigation Bar */}
-        <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4">
-          <div className="flex items-center justify-between gap-3 sm:gap-6">
-            {/* Brand Logo */}
-            <div className="flex items-center gap-2 cursor-pointer" onClick={handleHomeClick}>
-              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center text-white shadow-md shadow-emerald-200">
-                <Sparkles className="w-5 h-5 animate-pulse" />
-              </div>
-              <div>
-                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-700 font-opensans leading-none" style={{ fontFamily: "'Open Sans', sans-serif" }}>
-                  Lumimei
-                </h1>
-                <p className="text-[10px] sm:text-xs text-emerald-700 font-semibold tracking-wide font-battambang" style={{ fontFamily: "'Battambang', 'Open Sans', sans-serif" }}>
-                  {language === 'km' ? 'អ្នកឯកទេសថែរក្សាមុខមុនគ្រប់ប្រភេទ' : language === 'zh' ? '美妆与护肤专营店' : 'Cosmetics & Skincare'}
-                </p>
-              </div>
-            </div>
-
-            {/* Search Tool & Scan Face Analysis Button */}
-            <div className="flex-1 max-w-xl hidden md:flex items-center gap-2 mx-2 xl:mx-4">
-              {/* Search Form */}
-              <form onSubmit={handleSearchSubmit} className="relative flex-1 flex items-center">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => {
-                    setSearchQuery(e.target.value);
-                    if (e.target.value.trim() && currentPage !== 'products' && onNavigateToProducts) {
-                      onNavigateToProducts();
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleSearchSubmit(e);
-                    }
-                  }}
-                  placeholder={
-                    language === 'km'
-                      ? 'ស្វែងរក Lumimei Clay Mask, ប្រេងដូង, សាប៊ូ...'
-                      : language === 'zh'
-                      ? '搜索 Lumimei 泥膜、椰子油、香皂...'
-                      : 'Search Lumimei Clay Mask, Coconut Oil, Soap...'
-                  }
-                  className="w-full pl-9 pr-14 py-2 text-xs xl:text-sm bg-emerald-50/70 border border-emerald-200 rounded-full focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition"
+        <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4 relative z-40 overflow-visible">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-3 sm:gap-4 overflow-visible">
+            {/* Row 1: Brand Logo & Profile Avatar ("គណនីខ្ញុំ") on the same row */}
+            <div className="flex items-center justify-between sm:justify-start gap-3 sm:gap-4 w-full md:w-auto">
+              <div className="flex items-center gap-2 cursor-pointer" onClick={handleHomeClick}>
+                <img
+                  src="https://i.postimg.cc/t7GTTRX8/Logo-20260630-155252-0000.png"
+                  alt="Lumimei Logo"
+                  className="w-11 h-11 object-contain rounded-full shadow-md shrink-0 border border-emerald-100 bg-white"
+                  referrerPolicy="no-referrer"
                 />
-                <button
-                  type="submit"
-                  className="absolute left-1.5 top-1/2 -translate-y-1/2 p-1.5 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-100/60 rounded-full transition cursor-pointer"
-                  title={language === 'km' ? 'ចុចស្វែងរក' : language === 'zh' ? '点击搜索' : 'Search'}
-                  aria-label="Search"
-                >
-                  <Search className="w-4 h-4" />
-                </button>
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600 cursor-pointer p-1"
-                    title="Clear"
-                  >
-                    ✕
-                  </button>
-                )}
-              </form>
+                <div>
+                  <h1 className="text-[27px] font-bold tracking-tight text-emerald-700 font-opensans leading-tight" style={{ fontFamily: "'Open Sans', sans-serif" }}>
+                    Lumimei
+                  </h1>
+                  <p className="text-[12px] text-emerald-700 font-semibold tracking-wide font-battambang mt-0.5" style={{ fontFamily: "'Battambang', 'Open Sans', sans-serif" }}>
+                    {language === 'km' ? 'អ្នកឯកទេសថែរក្សាមុខមុនគ្រប់ប្រភេទ' : language === 'zh' ? '美妆与护肤专营店' : 'Cosmetics & Skincare'}
+                  </p>
+                </div>
+              </div>
 
-              {/* Scan Face Skin Analysis Button ("scan វិភាគស្បែកមុខ") */}
-              <button
-                onClick={onOpenFaceScan}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs xl:text-sm font-semibold rounded-full shadow-xs hover:shadow-md transition cursor-pointer shrink-0 border border-emerald-500/40"
-                title="scan វិភាគស្បែកមុខ"
-              >
-                <Camera className="w-4 h-4 text-emerald-200 animate-pulse" />
-                <span className="whitespace-nowrap font-battambang" style={{ fontFamily: "'Battambang', sans-serif" }}>
-                  scan វិភាគស្បែកមុខ
-                </span>
-              </button>
+              {/* Profile Avatar / Account Dropdown Menu ("គណនីខ្ញុំ") beside Lumimei on Mobile */}
+              {renderAccountDropdown(mobileAccountDropdownRef, 'md:hidden')}
             </div>
 
-            {/* Action Buttons & Tools */}
-            <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-              {/* Bell Button */}
+            {/* Row 2: Action Buttons in Order: 1. Bell -> 2. Review -> 3. Wishlist -> 4. Cart -> 5. Account Dropdown (Desktop) */}
+            <div className="flex items-center justify-center sm:justify-end gap-2 sm:gap-2.5 flex-wrap sm:flex-nowrap shrink-0 w-full md:w-auto">
+              {/* 1. បើកការជូនដំណឹង (Bell Button) */}
               <button
                 onClick={toggleBellNotification}
-                className={`relative p-1.5 sm:p-2 rounded-full border transition cursor-pointer shrink-0 ${
+                className={`relative p-2 rounded-full border transition cursor-pointer shrink-0 ${
                   bellActive
                     ? 'bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-300 shadow-xs'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-400 border-slate-300'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-300'
                 }`}
                 title={
                   language === 'km'
-                    ? 'បើកការជូនដំណឹងការបញ្ចុះតម្លៃ និងព័ត៌មានពិសេស'
+                    ? 'បើកការជូនដំណឹង'
                     : language === 'zh'
-                    ? '小铃铛：开启促销优惠与重要通知'
+                    ? '小铃铛通知'
                     : 'Offer & Sale Notifications'
                 }
               >
-                <Bell className="w-5 h-5 sm:w-6 sm:h-6" />
+                <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
                 {bellActive && (
                   <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white animate-pulse" />
                 )}
               </button>
 
-              {/* Wishlist Button */}
+              {/* 2. ការវាយតម្លៃ (Review / Customer Reviews Button) */}
+              <button
+                onClick={() => setShowReviewsModal(true)}
+                className="relative p-2 text-amber-600 hover:text-amber-700 bg-amber-50/80 hover:bg-amber-100 rounded-full border border-amber-200/80 transition cursor-pointer shrink-0 shadow-2xs"
+                title={
+                  language === 'km'
+                    ? 'ការវាយតម្លៃអតិថិជន (Reviews)'
+                    : language === 'zh'
+                    ? '客户评价 (Reviews)'
+                    : 'Customer Reviews'
+                }
+              >
+                <Star className="w-4 h-4 sm:w-5 sm:h-5 fill-amber-400 text-amber-500" />
+                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 sm:min-w-5 sm:h-5 bg-emerald-600 text-white text-[9px] sm:text-[10px] font-extrabold rounded-full flex items-center justify-center shadow-2xs">
+                  {reviewsList.length > 0 ? `${reviewsList.length}` : '0'}
+                </span>
+              </button>
+
+              {/* 3. បញ្ជីផលិតផលពេញចិត្ត (Wishlist Button) */}
               <button
                 onClick={onOpenWishlist}
-                className="relative p-1.5 sm:p-2 text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 rounded-full transition cursor-pointer"
-                title="Wishlist"
+                className="relative p-2 text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 rounded-full border border-slate-200 transition cursor-pointer shrink-0"
+                title="បញ្ជីផលិតផលពេញចិត្ត"
               >
-                <Heart className="w-5 h-5 sm:w-6 sm:h-6" />
+                <Heart className="w-4 h-4 sm:w-5 sm:h-5" />
                 {wishlistCount > 0 && (
                   <span className="absolute -top-1 -right-1 w-4 h-4 sm:w-5 sm:h-5 bg-emerald-600 text-white text-[9px] sm:text-[10px] font-bold rounded-full flex items-center justify-center">
                     {wishlistCount}
@@ -484,10 +734,11 @@ export const Header: React.FC<HeaderProps> = ({
                 )}
               </button>
 
-              {/* Cart Button */}
+              {/* 3. កន្ត្រកទំនិញរបស់អ្នក (Cart Button) */}
               <button
                 onClick={onOpenCart}
-                className="relative flex items-center gap-1.5 px-2.5 py-1.5 sm:px-4 sm:py-2 bg-emerald-950 text-white text-xs sm:text-sm font-medium rounded-full hover:bg-emerald-900 transition cursor-pointer shadow-xs"
+                className="relative flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 bg-emerald-950 text-white text-xs sm:text-sm font-medium rounded-full hover:bg-emerald-900 transition cursor-pointer shadow-xs shrink-0"
+                title="កន្ត្រកទំនិញរបស់អ្នក"
               >
                 <div className="relative">
                   <ShoppingBag className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-300" />
@@ -501,71 +752,52 @@ export const Header: React.FC<HeaderProps> = ({
                   ${totalUsd.toFixed(2)}
                 </span>
               </button>
-            </div>
-          </div>
 
-          {/* Mobile Search Tool & Scan Face Analysis Button */}
-          <div className="mt-2.5 md:hidden flex items-center gap-2">
-            <form onSubmit={handleSearchSubmit} className="relative flex-1 flex items-center">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  if (e.target.value.trim() && currentPage !== 'products' && onNavigateToProducts) {
-                    onNavigateToProducts();
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleSearchSubmit(e);
-                  }
-                }}
-                placeholder={
-                  language === 'km'
-                    ? 'ស្វែងរក Lumimei, Clay Mask, សាប៊ូ...'
-                    : language === 'zh'
-                    ? '搜索 Lumimei 商品...'
-                    : 'Search products or brands...'
-                }
-                className="w-full pl-8 pr-12 py-1.5 text-xs bg-emerald-50/70 border border-emerald-200 rounded-full focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
+              {/* 4. រង្វាន់ Reward (Reward Icon Button) */}
               <button
-                type="submit"
-                className="absolute left-1 top-1/2 -translate-y-1/2 p-1 text-emerald-600 hover:text-emerald-800 rounded-full transition cursor-pointer"
-                title={language === 'km' ? 'ចុចស្វែងរក' : language === 'zh' ? '点击搜索' : 'Search'}
-                aria-label="Search"
+                onClick={onOpenPoints}
+                className="relative flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-800 text-white text-xs sm:text-sm font-bold rounded-full transition cursor-pointer shadow-xs shrink-0 active:scale-95 group"
+                title={
+                  language === 'km'
+                    ? 'រង្វាន់ និងពិន្ទុសន្សំ (Reward)'
+                    : language === 'zh'
+                    ? '积分与奖励 (Reward)'
+                    : 'Reward & Points'
+                }
               >
-                <Search className="w-3.5 h-3.5" />
+                <div className="relative">
+                  <Gift className="w-4 h-4 sm:w-5 sm:h-5 text-amber-100 group-hover:scale-110 transition-transform" />
+                  <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 bg-amber-950 text-amber-200 text-[9px] font-black rounded-full flex items-center justify-center border border-amber-300/40">
+                    {currentPoints}
+                  </span>
+                </div>
+                <span className="hidden sm:inline text-white font-bold text-xs tracking-wide font-opensans">
+                  Reward
+                </span>
               </button>
-              {searchQuery && (
+
+              {/* 4.1 Admin Portal Quick Button (Shown for Admins) */}
+              {isAdmin && onNavigateToAdmin && (
                 <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600 cursor-pointer p-0.5"
-                  title="Clear"
+                  onClick={onNavigateToAdmin}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 bg-gradient-to-r from-slate-900 to-emerald-950 hover:from-slate-800 hover:to-emerald-900 text-amber-300 text-xs sm:text-sm font-extrabold rounded-full border border-amber-400/80 shadow-md transition cursor-pointer shrink-0 active:scale-95 group"
+                  title="ចូលផ្ទាំង Admin (Admin Portal)"
                 >
-                  ✕
+                  <ShieldCheck className="w-4 h-4 text-amber-400 group-hover:rotate-12 transition-transform" />
+                  <span className="font-bold tracking-wide">
+                    Admin
+                  </span>
                 </button>
               )}
-            </form>
 
-            {/* Mobile Scan Face Skin Analysis Button */}
-            <button
-              onClick={onOpenFaceScan}
-              className="flex items-center gap-1 px-2.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-[11px] font-semibold rounded-full shadow-xs transition cursor-pointer shrink-0 border border-emerald-500/40"
-              title="scan វិភាគស្បែកមុខ"
-            >
-              <Camera className="w-3.5 h-3.5 text-emerald-200" />
-              <span className="whitespace-nowrap font-battambang" style={{ fontFamily: "'Battambang', sans-serif" }}>
-                scan វិភាគស្បែកមុខ
-              </span>
-            </button>
+              {/* 5. គណនីខ្ញុំ (Account Dropdown Menu on Desktop) */}
+              {renderAccountDropdown(desktopAccountDropdownRef, 'hidden md:block')}
+            </div>
           </div>
         </div>
 
         {/* Navigation Menu Bar */}
-        <nav className="bg-emerald-900 text-white border-t border-emerald-800 shadow-inner relative z-50 overflow-visible">
+        <nav className="bg-emerald-900 text-white border-t border-emerald-800 shadow-inner relative z-20 overflow-visible">
           {/* Desktop / Responsive Top Navigation Bar */}
           <div className="max-w-7xl mx-auto px-2 sm:px-4 hidden sm:flex flex-wrap items-center justify-start gap-2 sm:gap-3 py-2.5 overflow-visible">
             {topMenuItems.map((item) => {
@@ -1789,56 +2021,435 @@ export const Header: React.FC<HeaderProps> = ({
 
             <div className="space-y-3">
               <a
-                href="tel:+85512345678"
-                className="flex items-center gap-3 p-3 bg-emerald-50 hover:bg-emerald-100 rounded-2xl border border-emerald-200 transition text-xs font-bold text-emerald-950"
+                href="https://t.me/Lumimeiadmin"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-3 p-3 bg-teal-50 hover:bg-teal-100 rounded-2xl border border-teal-200 transition text-xs font-bold text-teal-950"
               >
-                <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                  <PhoneCall className="w-4 h-4" />
+                <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0">
+                  <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.831-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
                 </div>
                 <div>
-                  <span>+855 12 345 678 / +855 98 765 432</span>
-                  <span className="block text-[10px] text-emerald-700 font-normal">
-                    {language === 'km' ? 'ទូរស័ព្ទពិគ្រោះយោបល់ផ្ទាល់' : language === 'zh' ? '客服热线 (金边)' : 'Direct Phone Line'}
-                  </span>
+                  <span>Lumimei Admin</span>
                 </div>
               </a>
 
               <a
-                href="https://t.me/LumimeiCambodia"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-3 p-3 bg-sky-50 hover:bg-sky-100 rounded-2xl border border-sky-200 transition text-xs font-bold text-sky-950"
+                href="mailto:lumimei.admin@gmail.com"
+                className="flex items-center gap-3 p-3 bg-rose-50 hover:bg-rose-100 rounded-2xl border border-rose-200 transition text-xs font-bold text-rose-950"
               >
-                <div className="w-9 h-9 rounded-xl bg-sky-500 text-white flex items-center justify-center shrink-0">
-                  <MessageSquare className="w-4 h-4" />
+                <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0">
+                  <Mail className="w-4 h-4" />
                 </div>
                 <div>
-                  <span>Telegram: @LumimeiCambodia</span>
-                  <span className="block text-[10px] text-sky-700 font-normal">
-                    {language === 'km' ? 'ឆាតផ្ទាល់តាម Telegram ឆ្លើយតបឆាប់រហ័ស' : language === 'zh' ? 'Telegram 极速咨询' : 'Fast Telegram Messaging'}
-                  </span>
+                  <span>lumimei.admin@gmail.com</span>
                 </div>
               </a>
 
-              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex items-start gap-3 text-xs">
-                <MapPin className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-bold text-slate-900 block">Phnom Penh Flagship Store</span>
-                  <span className="text-[11px] text-slate-600 leading-relaxed block mt-0.5">
-                    #128, Street 271, Khan Sen Sok, Phnom Penh, Cambodia
-                  </span>
+              <div className="pt-2 border-t border-gray-100">
+                <span className="text-xs font-bold text-gray-700 block mb-2">
+                  {language === 'km' ? 'បណ្តាញសង្គមផ្លូវការ' : language === 'zh' ? '官方社交媒体' : 'Official Social Media'}
+                </span>
+                <div className="flex items-center gap-2">
+                  <a
+                    href="http://t.me/Lumimeicambodia"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 flex items-center justify-center gap-2 p-2.5 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl text-sky-900 font-bold text-xs transition shadow-xs"
+                    title="Telegram Channel"
+                  >
+                    <svg className="w-4 h-4 fill-sky-500 shrink-0" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.831-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                    <span>Telegram</span>
+                  </a>
+
+                  <a
+                    href="https://www.facebook.com/LumimeiCambodia"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 flex items-center justify-center gap-2 p-2.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl text-blue-900 font-bold text-xs transition shadow-xs"
+                    title="Facebook Page"
+                  >
+                    <svg className="w-4 h-4 fill-blue-600 shrink-0" viewBox="0 0 24 24"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                    <span>Facebook</span>
+                  </a>
+
+                  <a
+                    href="https://tiktok.com/@lumimeicambodia"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 flex items-center justify-center gap-2 p-2.5 bg-neutral-900 hover:bg-black text-white rounded-xl font-bold text-xs transition shadow-xs"
+                    title="TikTok Account"
+                  >
+                    <svg className="w-4 h-4 fill-white shrink-0" viewBox="0 0 24 24"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.82.56-1.3 1.54-1.29 2.54.02 1.07.61 2.07 1.53 2.59.9.52 2.06.55 2.99.07.91-.46 1.51-1.42 1.57-2.44.08-2.14.03-4.28.04-6.42-.01-3.25-.01-6.5 0-9.75z"/></svg>
+                    <span>TikTok</span>
+                  </a>
                 </div>
               </div>
+            </div>
 
-              <div className="pt-2 flex justify-end">
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setShowContactModal(false)}
+                className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
+              >
+                {language === 'km' ? 'បិទ' : language === 'zh' ? '关闭' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Customer Reviews Modal */}
+      {showReviewsModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl relative my-auto animate-in fade-in zoom-in duration-200 border border-amber-100 max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-gray-100 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+                  <Star className="w-6 h-6 fill-amber-400 text-amber-500" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900 font-opensans flex items-center gap-2">
+                    <span>{language === 'km' ? 'ការវាយតម្លៃអតិថិជន' : language === 'zh' ? '客户真实评价' : 'Customer Reviews'}</span>
+                    <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">5.0 ★</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    {language === 'km' ? 'មតិសរសើរ និងការជឿជាក់ពីអតិថិជន Lumimei' : language === 'zh' ? 'Lumimei 专营店来自真实的客户好评' : 'Real customer feedback & verified reviews'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowReviewsModal(false);
+                  setShowWriteReviewForm(false);
+                  setReviewSubmitted(false);
+                }}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100 cursor-pointer transition shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body Scrollable */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-4 no-scrollbar">
+              {/* Overall Satisfaction Banner */}
+              <div className="bg-gradient-to-r from-amber-50 via-emerald-50 to-teal-50 p-3 rounded-2xl border border-amber-200/70 flex items-center justify-between">
+                <div className="flex items-center gap-1 text-amber-500">
+                  {[...Array(5)].map((_, i) => (
+                    <Star key={i} className="w-4 h-4 fill-amber-400 text-amber-400" />
+                  ))}
+                </div>
                 <button
-                  onClick={() => setShowContactModal(false)}
-                  className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
+                  onClick={() => {
+                    setShowWriteReviewForm(!showWriteReviewForm);
+                    setReviewSubmitted(false);
+                  }}
+                  className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl transition shadow-xs cursor-pointer shrink-0"
                 >
-                  {language === 'km' ? 'បិទ' : language === 'zh' ? '关闭' : 'Close'}
+                  {language === 'km' ? '+ សរសេរការវាយតម្លៃ' : '+ Write Review'}
                 </button>
               </div>
+
+              {/* Write Review Form */}
+              {showWriteReviewForm && (
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3 animate-in fade-in duration-150">
+                  <h4 className="text-xs font-bold text-slate-900">
+                    {language === 'km' ? 'ចែករំលែកបទពិសោធន៍របស់អ្នក' : 'Share Your Experience'}
+                  </h4>
+
+                  {reviewSubmitted ? (
+                    <div className="p-3 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold text-center">
+                      ✓ {language === 'km' ? 'អរគុណសម្រាប់ការវាយតម្លៃ! មតិរបស់អ្នកត្រូវបានរក្សាទុក។' : 'Thank you for your feedback! Review saved.'}
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!newReviewComment.trim()) return;
+                        const currentReviewerName =
+                          userProfile?.fullName ||
+                          userProfile?.displayName ||
+                          currentUser?.displayName ||
+                          currentUser?.phoneNumber ||
+                          currentUser?.email ||
+                          (language === 'km' ? 'អតិថិជន Lumimei' : 'Lumimei Customer');
+
+                        const createdReview = {
+                          id: Date.now().toString(),
+                          name: currentReviewerName,
+                          rating: newReviewRating || 5,
+                          date: 'ទើបតែបន្ថែម',
+                          product: 'Lumimei Product',
+                          comment: newReviewComment.trim(),
+                          verified: true,
+                          photos: [...reviewPhotos],
+                          userAvatar: userProfile?.photoURL || currentUser?.photoURL || undefined,
+                        };
+                        setReviewsList([createdReview, ...reviewsList]);
+                        setReviewSubmitted(true);
+                        setNewReviewComment('');
+                        setNewReviewRating(0);
+                        setReviewPhotos([]);
+                        setTimeout(() => {
+                          setShowWriteReviewForm(false);
+                          setReviewSubmitted(false);
+                        }, 1800);
+                      }}
+                      className="space-y-3"
+                    >
+                      {/* Customer Account Profile Card */}
+                      <div className="flex items-center gap-3 p-2.5 bg-emerald-50/90 rounded-2xl border border-emerald-200/80">
+                        {userProfile?.photoURL || currentUser?.photoURL ? (
+                          <img
+                            src={userProfile?.photoURL || currentUser?.photoURL}
+                            alt=""
+                            className="w-10 h-10 rounded-full object-cover border border-emerald-300 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-sm shadow-xs shrink-0">
+                            {(
+                              userProfile?.fullName ||
+                              userProfile?.displayName ||
+                              currentUser?.displayName ||
+                              currentUser?.phoneNumber ||
+                              currentUser?.email ||
+                              'L'
+                            )
+                              .charAt(0)
+                              .toUpperCase()}
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-emerald-800 font-extrabold uppercase tracking-wider block">
+                              {language === 'km' ? 'គណនីវាយតម្លៃ' : 'Reviewing as Account'}
+                            </span>
+                          </div>
+                          <p className="text-xs font-bold text-slate-900 truncate">
+                            {userProfile?.fullName ||
+                              userProfile?.displayName ||
+                              currentUser?.displayName ||
+                              currentUser?.phoneNumber ||
+                              currentUser?.email ||
+                              (language === 'km' ? 'អតិថិជន Lumimei' : 'Lumimei Customer')}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1.5">
+                          {language === 'km' ? 'ពិន្ទុផ្កាយ' : 'Star Rating'}
+                        </label>
+                        <div
+                          className="flex items-center gap-1.5 p-2 bg-slate-50/90 rounded-xl border border-slate-200/80 w-fit"
+                          onMouseLeave={() => setHoveredRating(0)}
+                        >
+                          {[1, 2, 3, 4, 5].map((star) => {
+                            const activeRating = hoveredRating || newReviewRating;
+                            const isFilled = activeRating > 0 && star <= activeRating;
+                            return (
+                              <button
+                                key={star}
+                                type="button"
+                                onClick={() => setNewReviewRating(star)}
+                                onMouseEnter={() => setHoveredRating(star)}
+                                className="p-1 cursor-pointer hover:scale-125 focus:scale-125 transition-transform duration-150 active:scale-95 group"
+                                title={`${star} ${language === 'km' ? 'ផ្កាយ' : 'Stars'}`}
+                              >
+                                <Star
+                                  className={`w-6 h-6 transition-colors duration-150 ${
+                                    isFilled
+                                      ? 'fill-amber-400 text-amber-500 drop-shadow-2xs'
+                                      : 'text-slate-300 hover:text-amber-300'
+                                  }`}
+                                />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                          {language === 'km' ? 'មតិយោបល់របស់អ្នក' : 'Your Review'}
+                        </label>
+                        <textarea
+                          rows={3}
+                          required
+                          value={newReviewComment}
+                          onChange={(e) => setNewReviewComment(e.target.value)}
+                          placeholder={language === 'km' ? 'សរសេរការវាយតម្លៃរបស់អ្នកនៅទីនេះ...' : 'Write your review here...'}
+                          className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-600 resize-none"
+                        />
+                      </div>
+
+                      {/* Photo Upload Section (Up to 5 Photos) */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            {language === 'km' ? 'រូបភាពផលិតផល (អតិបរមា 5 រូប)' : 'Upload Photos (Max 5)'}
+                          </label>
+                          <span className="text-[10px] text-emerald-700 font-bold">
+                            {reviewPhotos.length}/5 {language === 'km' ? 'រូបភាព' : 'Photos'}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 items-center">
+                          {reviewPhotos.map((imgSrc, idx) => (
+                            <div key={idx} className="relative w-14 h-14 rounded-xl overflow-hidden border border-slate-200 group shrink-0 bg-white shadow-2xs">
+                              <img src={imgSrc} alt="" className="w-full h-full object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => setReviewPhotos(reviewPhotos.filter((_, i) => i !== idx))}
+                                className="absolute top-0.5 right-0.5 p-1 bg-red-600 text-white rounded-full opacity-90 hover:opacity-100 transition shadow-xs cursor-pointer"
+                                title={language === 'km' ? 'លុបរូបភាព' : 'Remove Photo'}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+
+                          {reviewPhotos.length < 5 && (
+                            <label className="w-14 h-14 rounded-xl border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-emerald-50/50 hover:bg-emerald-100/50 flex flex-col items-center justify-center gap-0.5 cursor-pointer transition shrink-0">
+                              <Camera className="w-4 h-4 text-emerald-600" />
+                              <span className="text-[9px] font-bold text-emerald-800">
+                                + {language === 'km' ? 'ថែមរូប' : 'Add'}
+                              </span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => {
+                                  const files = e.target.files;
+                                  if (!files || files.length === 0) return;
+                                  const remaining = 5 - reviewPhotos.length;
+                                  if (remaining <= 0) return;
+                                  const fileArray: File[] = (Array.from(files) as File[]).slice(0, remaining);
+                                  fileArray.forEach((file: File) => {
+                                    const reader = new FileReader();
+                                    reader.onload = (uploadEvt) => {
+                                      if (uploadEvt.target?.result) {
+                                        setReviewPhotos((prev) => [...prev, uploadEvt.target!.result as string].slice(0, 5));
+                                      }
+                                    };
+                                    reader.readAsDataURL(file);
+                                  });
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <Star className="w-4 h-4 fill-amber-300 text-amber-300" />
+                        <span>{language === 'km' ? 'បញ្ជូនការវាយតម្លៃ' : 'Submit Review'}</span>
+                      </button>
+                    </form>
+                  )}
+                </div>
+              )}
+
+              {/* Reviews List */}
+              <div className="space-y-3">
+                {reviewsList.length === 0 ? (
+                  <div className="py-10 px-4 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center space-y-2">
+                    <div className="w-12 h-12 rounded-full bg-amber-100/80 text-amber-500 flex items-center justify-center mb-1">
+                      <Star className="w-6 h-6 text-amber-400" />
+                    </div>
+                    <p className="text-sm font-bold text-slate-700">
+                      {language === 'km'
+                        ? 'មិនទាន់មានអតិថិជន Review នៅឡើយ'
+                        : language === 'zh'
+                        ? '暂无客户评价'
+                        : 'No customer reviews yet'}
+                    </p>
+                    <p className="text-xs text-slate-500 max-w-xs">
+                      {language === 'km'
+                        ? 'សូមធ្វើជាអតិថិជនដំបូងគេដែលចែករំលែកបទពិសោធន៍ជាមួយផលិតផល Lumimei!'
+                        : 'Be the first customer to share your experience with Lumimei products!'}
+                    </p>
+                  </div>
+                ) : (
+                  reviewsList.map((rev) => (
+                    <div key={rev.id} className="p-3.5 bg-slate-50/90 rounded-2xl border border-slate-200/80 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {rev.userAvatar ? (
+                            <img src={rev.userAvatar} alt="" className="w-7 h-7 rounded-full object-cover border border-slate-200 shrink-0" />
+                          ) : (
+                            <div className="w-7 h-7 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-[10px] shrink-0">
+                              {rev.name.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                          <span className="font-bold text-xs text-slate-900">{rev.name}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400">{rev.date}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        {[...Array(rev.rating)].map((_, i) => (
+                          <Star key={i} className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                        ))}
+                      </div>
+
+                      <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                        "{rev.comment}"
+                      </p>
+
+                      {/* Display Uploaded Review Photos */}
+                      {rev.photos && rev.photos.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {rev.photos.map((pUrl, pIdx) => (
+                            <img
+                              key={pIdx}
+                              src={pUrl}
+                              alt=""
+                              onClick={() => setSelectedReviewPhoto(pUrl)}
+                              className="w-16 h-16 rounded-xl object-cover border border-slate-200 cursor-pointer hover:opacity-90 hover:scale-105 transition shrink-0 shadow-2xs"
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
+
+            {/* Modal Footer */}
+            <div className="pt-3 border-t border-gray-100 flex justify-end shrink-0">
+              <button
+                onClick={() => setShowReviewsModal(false)}
+                className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
+              >
+                {language === 'km' ? 'បិទ' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Review Photo Zoom Lightbox Modal */}
+      {selectedReviewPhoto && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setSelectedReviewPhoto(null)}
+        >
+          <div className="relative max-w-2xl max-h-[90vh]">
+            <img src={selectedReviewPhoto} alt="" className="max-w-full max-h-[85vh] rounded-2xl object-contain shadow-2xl" />
+            <button
+              onClick={() => setSelectedReviewPhoto(null)}
+              className="absolute -top-3 -right-3 p-2 bg-white text-slate-800 rounded-full shadow-lg font-bold cursor-pointer hover:bg-slate-100"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
         </div>
       )}

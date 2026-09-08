@@ -1,5 +1,5 @@
 import React from 'react';
-import { Star, Heart, ShoppingBag, Eye, Check } from 'lucide-react';
+import { Heart, ShoppingBag, Eye, Check } from 'lucide-react';
 import { Product, Language } from '../types';
 
 interface ProductCardProps {
@@ -30,6 +30,10 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           alt={product.name}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
           referrerPolicy="no-referrer"
+          onError={(e) => {
+            (e.target as HTMLImageElement).src =
+              'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&q=80&w=800';
+          }}
         />
 
         {/* Wishlist Button */}
@@ -50,12 +54,22 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
         {/* Top Badges */}
         <div className="absolute top-3 left-3 flex flex-col gap-1 items-start">
-          {product.isBestSeller && (
+          {product.originalPriceUsd && product.originalPriceUsd > product.priceUsd && (
+            <span className="px-2 py-0.5 bg-rose-600 text-white text-[10px] font-black rounded-md uppercase tracking-wider shadow-xs">
+              {language === 'km' ? `ចុះ ${Math.round(((product.originalPriceUsd - product.priceUsd) / product.originalPriceUsd) * 100)}%` : `-${Math.round(((product.originalPriceUsd - product.priceUsd) / product.originalPriceUsd) * 100)}%`}
+            </span>
+          )}
+          {product.isFreeShipping && (
+            <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-black rounded-md uppercase tracking-wider shadow-xs flex items-center gap-1">
+              <span>🚚 {language === 'km' ? 'Free ដឹក' : language === 'zh' ? '包邮' : 'Free Ship'}</span>
+            </span>
+          )}
+          {product.isBestSeller && !product.isFreeShipping && (
             <span className="px-2 py-0.5 bg-amber-500 text-white text-[10px] font-bold rounded-md uppercase tracking-wider shadow-xs">
               {language === 'km' ? 'លក់ដាច់បំផុត' : language === 'zh' ? '热销爆款' : 'Best Seller'}
             </span>
           )}
-          {product.isNew && (
+          {product.isNew && !product.isBestSeller && (
             <span className="px-2 py-0.5 bg-emerald-600 text-white text-[10px] font-bold rounded-md uppercase tracking-wider shadow-xs">
               {language === 'km' ? 'ថ្មី' : language === 'zh' ? '新品' : 'NEW'}
             </span>
@@ -89,23 +103,21 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             {language === 'km' ? product.nameKm : language === 'zh' ? (product.nameZh || product.name) : product.name}
           </h3>
 
-          {/* Rating */}
-          <div className="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
-            <div className="flex items-center text-amber-400">
-              <Star className="w-3.5 h-3.5 fill-current" />
-              <span className="font-bold text-slate-700 ml-1">{product.rating}</span>
-            </div>
-            {product.reviewCount && <span>({product.reviewCount})</span>}
-          </div>
+          {/* Rating removed per user request */}
         </div>
 
         {/* Price & Add to Cart */}
         <div className="pt-2 border-t border-emerald-50 flex items-end justify-between gap-2">
           <div>
-            <div className="flex items-baseline gap-1.5">
+            <div className="flex items-baseline gap-1.5 flex-wrap">
               <span className="text-base sm:text-lg font-extrabold text-slate-900">
                 ${product.priceUsd.toFixed(2)}
               </span>
+              {product.originalPriceUsd && product.originalPriceUsd > product.priceUsd && (
+                <span className="text-xs text-slate-400 line-through font-normal">
+                  ${product.originalPriceUsd.toFixed(2)}
+                </span>
+              )}
             </div>
             <p className="text-[11px] text-slate-500 font-medium">
               ៛{product.priceKhr.toLocaleString()}

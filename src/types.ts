@@ -17,22 +17,32 @@ export interface SkinConcern {
   nameZh?: string;
 }
 
+export interface ProductDescriptionCard {
+  id: string;
+  image: string;
+  caption: string;
+}
+
 export interface Product {
   id: string;
   name: string;
   nameKm: string;
   nameZh?: string;
+  order?: number;
   brand: string;
   category: string;
   priceUsd: number;
   priceKhr: number;
+  pointsCost?: number;
   originalPriceUsd?: number;
   rating: number;
   reviewCount: number;
   image: string;
   gallery?: string[];
+  descriptionCards?: ProductDescriptionCard[];
   isNew?: boolean;
   isBestSeller?: boolean;
+  isFreeShipping?: boolean;
   skinTypes: SkinType[];
   skinConcerns: string[];
   description: string;
@@ -76,8 +86,10 @@ export interface OrderCustomerInfo {
   fullName: string;
   phone: string;
   telegramPhone?: string;
+  skinConcern?: string;
   cityProvince: string;
   districtSangkat: string;
+  sangkatCommune?: string;
   addressDetail: string;
   notes?: string;
 }

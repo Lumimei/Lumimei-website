@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { MessageSquare, Send, X, Bot, Sparkles, RefreshCw, SendHorizontal, Phone, ExternalLink, ChevronDown, User } from 'lucide-react';
 import { Language, Product } from '../types';
-import { PRODUCTS } from '../data/products';
+import { getAllStoredProducts } from '../utils/productManager';
+import { GEMINI_ENABLED } from '../config/appConfig';
 
 interface ChatMessage {
   id: string;
@@ -14,15 +15,18 @@ interface ChatMessage {
 interface ChatBotWidgetProps {
   language: Language;
   onSelectProduct?: (product: Product) => void;
+  products?: Product[];
 }
 
-export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelectProduct }) => {
+export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelectProduct, products }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const catalog = products && products.length > 0 ? products : getAllStoredProducts();
 
   // Initialize greeting message on first load or language change
   useEffect(() => {
@@ -64,6 +68,20 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
     if (!textToSend) setInput('');
     setIsLoading(true);
 
+    if (!GEMINI_ENABLED) {
+      setTimeout(() => {
+        const disabledMsg: ChatMessage = {
+          id: `bot_${Date.now()}`,
+          sender: 'bot',
+          text: 'AI ជំនួយការថែរក្សាស្បែកកំពុងត្រូវបានរៀបចំ។ មុខងារនេះនឹងអាចប្រើបានក្នុងពេលឆាប់ៗនេះ។',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setMessages((prev) => [...prev, disabledMsg]);
+        setIsLoading(false);
+      }, 300);
+      return;
+    }
+
     try {
       // Build conversation history for API
       const history = messages.slice(-6).map((m) => ({
@@ -86,11 +104,11 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
 
       // Check if reply mentions specific products to show quick cards
       const matchedProductIds: string[] = [];
-      PRODUCTS.forEach((p) => {
-        if (
-          replyText.toLowerCase().includes(p.name.toLowerCase()) ||
-          (p.nameKm && replyText.includes(p.nameKm))
-        ) {
+      catalog.forEach((p) => {
+        if (!p) return;
+        const nameMatch = p.name ? replyText.toLowerCase().includes(p.name.toLowerCase()) : false;
+        const nameKmMatch = p.nameKm ? replyText.includes(p.nameKm) : false;
+        if (nameMatch || nameKmMatch) {
           matchedProductIds.push(p.id);
         }
       });
@@ -104,8 +122,7 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
       };
 
       setMessages((prev) => [...prev, botMsg]);
-    } catch (err) {
-      console.error('Chat error:', err);
+    } catch {
       const errorMsg: ChatMessage = {
         id: `err_${Date.now()}`,
         sender: 'bot',
@@ -141,22 +158,22 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
   };
 
   const quickPromptsKm = [
-    '🌸 Lumimei Clay Mask ប្រើដូចម្តេច?',
-    '💧 Lumimei សេរ៉ូម ជួយអ្វីខ្លះ?',
+    '🔥 ផលិតផលលក់ដាច់បំផុតមានអ្វីខ្លះ?',
+    '🏷️ ប្រូម៉ូសិនពិសេសប្រចាំខែ',
     '🛍️ បញ្ជីតម្លៃផលិតផលទាំងអស់',
     '🚚 សេវាដឹកជញ្ជូន និងទូទាត់ប្រាក់',
   ];
 
   const quickPromptsEn = [
-    '🌸 How to use Lumimei Clay Mask?',
-    '💧 Benefits of Lumimei Serum?',
+    '🔥 What are the Best Sellers?',
+    '🏷️ Special Promotions & Offers',
     '🛍️ Full Lumimei Price List',
     '🚚 Shipping & Payment methods',
   ];
 
   const quickPromptsZh = [
-    '🌸 Lumimei Clay Mask 泥膜使用方法？',
-    '💧 Lumimei 精华液功效？',
+    '🔥 畅销热卖商品推荐？',
+    '🏷️ 本月特别优惠促销',
     '🛍️ Lumimei 完整价格表',
     '🚚 配送与支付方式',
   ];
@@ -237,13 +254,13 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
               {language === 'km' ? 'ឆ្លើយតបរហ័សទាន់ចិត្ត ឥតគិតថ្លៃ' : 'Instant AI Answers'}
             </span>
             <a
-              href="https://t.me/lumimeicambodia"
+              href="http://t.me/Lumimeicambodia"
               target="_blank"
               rel="noreferrer"
               className="flex items-center gap-1 text-emerald-700 font-semibold hover:underline"
             >
               <Phone className="w-3 h-3" />
-              Telegram @lumimeicambodia
+              Telegram @Lumimeicambodia
             </a>
           </div>
 
@@ -280,7 +297,7 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
                 {msg.recommendedProductIds && msg.recommendedProductIds.length > 0 && (
                   <div className="mt-2.5 pl-9 w-full grid grid-cols-1 gap-2">
                     {msg.recommendedProductIds.map((pid) => {
-                      const prod = PRODUCTS.find((p) => p.id === pid);
+                      const prod = catalog.find((p) => p.id === pid);
                       if (!prod) return null;
                       return (
                         <div
