@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import {
-  initializeFirestore,
+  getFirestore,
   setLogLevel,
   doc,
   getDoc,
@@ -17,8 +18,22 @@ import {
 } from 'firebase/firestore';
 import fs from 'fs';
 import path from 'path';
-import firebaseConfig from '../firebase-applet-config.json';
+import rawFirebaseConfig from '../firebase-applet-config.json';
 import { TaskLogRecord, TaskSubmission, PointLogRecord } from './types';
+import {
+  FIRESTORE_DB_ID,
+  assertValidFirestoreDatabaseId,
+} from '../src/lib/firebaseConfig';
+
+// Safely sanitize server Firebase config
+const firebaseConfig = {
+  apiKey: (process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || rawFirebaseConfig.apiKey || '').trim(),
+  authDomain: (process.env.VITE_FIREBASE_AUTH_DOMAIN || rawFirebaseConfig.authDomain || 'lumimei-production-168.firebaseapp.com').trim(),
+  projectId: (process.env.VITE_FIREBASE_PROJECT_ID || rawFirebaseConfig.projectId || 'lumimei-production-168').trim(),
+  storageBucket: (process.env.VITE_FIREBASE_STORAGE_BUCKET || rawFirebaseConfig.storageBucket || 'lumimei-production-168.firebasestorage.app').trim(),
+  messagingSenderId: (process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || rawFirebaseConfig.messagingSenderId || '89302057043').trim(),
+  appId: (process.env.VITE_FIREBASE_APP_ID || rawFirebaseConfig.appId || '').trim(),
+};
 
 try {
   setLogLevel('silent');
@@ -79,54 +94,157 @@ const serverApp = getApps().some((app) => app.name === 'lumimei-server')
   ? getApp('lumimei-server')
   : initializeApp(firebaseConfig, 'lumimei-server');
 
-const databaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || "ai-studio-lumimei-7c9bf061-363f-4616-997f-7ddb5ae1f0b3";
+const databaseId = assertValidFirestoreDatabaseId(FIRESTORE_DB_ID);
 
-export const db = initializeFirestore(serverApp, {
-  experimentalForceLongPolling: true,
-}, databaseId);
+export const db = getFirestore(serverApp, databaseId);
+console.log('【Server Firestore 安全校验通过】已绑定命名数据库:', databaseId);
+
+// Ensure backend server has an authenticated session so firestore.rules allow server reads
+const serverAuth = getAuth(serverApp);
+let serverAuthPromise: Promise<any> | null = null;
+export async function ensureServerAuth() {
+  if (serverAuth.currentUser) return serverAuth.currentUser;
+  if (!serverAuthPromise) {
+    serverAuthPromise = signInAnonymously(serverAuth)
+      .then((cred) => {
+        console.log('✅ Server Firestore authenticated as UID:', cred.user.uid);
+        return cred.user;
+      })
+      .catch((err) => {
+        console.warn('⚠️ Server anonymous auth notice:', err?.message || err);
+        return null;
+      })
+      .finally(() => {
+        serverAuthPromise = null;
+      });
+  }
+  return serverAuthPromise;
+}
+
+// Trigger initial server auth in background
+ensureServerAuth().catch(() => {});
+
+export function normalizePhoneKey(phone: string): string {
+  if (!phone) return '';
+  let digits = phone.replace(/\D/g, '');
+  if (digits.startsWith('855')) digits = digits.slice(3);
+  if (digits.startsWith('0')) digits = digits.slice(1);
+  return digits;
+}
 
 /**
- * Find user document by userId (UID) or fallback by phoneNumber
+ * Find user document by userId (UID), phoneNumber, or fullName
  */
 export async function findUser(userIdOrPhone: string) {
   if (!userIdOrPhone) return null;
+  const cleanId = String(userIdOrPhone).trim();
+  const phoneKey = normalizePhoneKey(cleanId);
 
   // Check memory store first
-  if (memoryStore.users.has(userIdOrPhone)) {
-    return memoryStore.users.get(userIdOrPhone);
+  if (memoryStore.users.has(cleanId)) {
+    return memoryStore.users.get(cleanId);
   }
+  if (phoneKey && memoryStore.users.has(phoneKey)) {
+    return memoryStore.users.get(phoneKey);
+  }
+
   for (const u of memoryStore.users.values()) {
-    if (u.phoneNumber === userIdOrPhone || u.id === userIdOrPhone) {
+    if (
+      u.id === cleanId ||
+      u.uid === cleanId ||
+      u.phoneNumber === cleanId ||
+      (phoneKey && phoneKey.length >= 6 && normalizePhoneKey(u.phoneNumber) === phoneKey) ||
+      (u.fullName && u.fullName.trim().toLowerCase() === cleanId.toLowerCase()) ||
+      (u.initialFullName && u.initialFullName.trim().toLowerCase() === cleanId.toLowerCase())
+    ) {
       return u;
     }
   }
 
+  // Ensure server is authenticated before querying Firestore
+  await ensureServerAuth();
+
   // 1. Try finding by document ID (UID)
   try {
-    const userRef = doc(db, 'users', userIdOrPhone);
+    const userRef = doc(db, 'users', cleanId);
     const userSnap = await getDoc(userRef);
     if (userSnap.exists()) {
       const data = { id: userSnap.id, ...userSnap.data() } as any;
-      memoryStore.users.set(userIdOrPhone, data);
+      memoryStore.users.set(cleanId, data);
       return data;
     }
   } catch (err) {
-    // Graceful fallback to memory store
+    // Graceful fallback to other lookups
   }
 
-  // 2. Try query by phoneNumber
+  // 2. Try query by phoneNumber with variants
+  const phoneVariants: string[] = [cleanId];
+  if (phoneKey && phoneKey.length >= 6) {
+    phoneVariants.push(phoneKey);
+    phoneVariants.push('0' + phoneKey);
+    phoneVariants.push('855' + phoneKey);
+    phoneVariants.push('+855' + phoneKey);
+  }
+  const uniqueVariants = Array.from(new Set(phoneVariants));
+
   try {
     const usersRef = collection(db, 'users');
-    const q = query(usersRef, where('phoneNumber', '==', userIdOrPhone), limit(1));
+    const q = query(usersRef, where('phoneNumber', 'in', uniqueVariants.slice(0, 10)), limit(1));
     const querySnapshot = await getDocs(q);
     if (!querySnapshot.empty) {
       const docSnap = querySnapshot.docs[0];
       const data = { id: docSnap.id, ...docSnap.data() } as any;
-      memoryStore.users.set(userIdOrPhone, data);
+      memoryStore.users.set(cleanId, data);
+      if (phoneKey) memoryStore.users.set(phoneKey, data);
       return data;
     }
   } catch (err) {
-    // Graceful fallback
+    // Fallback if 'in' operator fails
+    try {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('phoneNumber', '==', cleanId), limit(1));
+      const querySnapshot = await getDocs(q);
+      if (!querySnapshot.empty) {
+        const docSnap = querySnapshot.docs[0];
+        const data = { id: docSnap.id, ...docSnap.data() } as any;
+        memoryStore.users.set(cleanId, data);
+        return data;
+      }
+    } catch {}
+  }
+
+  // 3. Try query by fullName / displayName if not a phone number
+  if (!phoneKey || phoneKey.length < 6) {
+    try {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('fullName', '==', cleanId), limit(1));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const docSnap = snap.docs[0];
+        const data = { id: docSnap.id, ...docSnap.data() } as any;
+        memoryStore.users.set(cleanId, data);
+        return data;
+      }
+    } catch {}
+  }
+
+  // 4. Scan Firestore users if phoneKey is available to find normalized match
+  if (phoneKey && phoneKey.length >= 6) {
+    try {
+      const usersRef = collection(db, 'users');
+      const allDocs = await getDocs(usersRef);
+      for (const d of allDocs.docs) {
+        const data = d.data() as any;
+        if (data && data.phoneNumber && normalizePhoneKey(data.phoneNumber) === phoneKey) {
+          const matched = { id: d.id, ...data };
+          memoryStore.users.set(cleanId, matched);
+          memoryStore.users.set(phoneKey, matched);
+          return matched;
+        }
+      }
+    } catch (err) {
+      // Graceful fallback
+    }
   }
 
   return null;
@@ -624,12 +742,31 @@ export async function getAllUsersFromDb(): Promise<any[]> {
 
 /**
  * Create or save new customer user in database
+ * Phone number is the unique key: If exists -> update existing record; If not -> create new row
  */
 export async function createUserInDb(userData: any) {
-  const userId = userData.id || `usr_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const phoneKey = normalizePhoneKey(userData.phoneNumber);
+
+  // 【电话号码去重】检查电话号码是否已存在于数据库中
+  if (phoneKey && phoneKey.length >= 6) {
+    const existing = await findUser(userData.phoneNumber);
+    if (existing && (existing.id || existing.uid)) {
+      const targetId = existing.id || existing.uid;
+      // 已存在 → 不要新建行，而是更新这个已有电话号码对应的那一行数据
+      return await updateUserInDb(targetId, userData);
+    }
+  }
+
+  const userId = userData.id || userData.uid || `usr_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const initialName = (userData.initialFullName || userData.fullName || userData.displayName || '').trim();
+
   const payload = {
     ...userData,
     id: userId,
+    uid: userId,
+    initialFullName: initialName,
+    fullName: (userData.fullName || userData.displayName || initialName || 'អតិថិជន').trim(),
+    displayName: (userData.displayName || userData.fullName || initialName || 'អតិថិជន').trim(),
     points: typeof userData.points === 'number' ? userData.points : 15,
     tier: userData.tier || 'silver',
     role: userData.role || 'customer',
@@ -645,6 +782,9 @@ export async function createUserInDb(userData: any) {
   memoryStore.users.set(userId, payload);
   if (payload.phoneNumber) {
     memoryStore.users.set(payload.phoneNumber.replace(/\s+/g, ''), payload);
+    if (phoneKey) {
+      memoryStore.users.set(phoneKey, payload);
+    }
   }
 
   // Save to Firestore users collection
@@ -664,10 +804,23 @@ export async function createUserInDb(userData: any) {
 export async function updateUserInDb(userId: string, updateData: any) {
   if (!userId) return null;
   const existing = (await findUser(userId)) || {};
+
+  // 严格保留首次创建时保存的姓名与首次创建时间
+  const preservedInitialName =
+    existing.initialFullName ||
+    existing.fullName ||
+    existing.displayName ||
+    updateData.initialFullName ||
+    updateData.fullName ||
+    '';
+
   const merged = {
     ...existing,
     ...updateData,
     id: userId,
+    uid: userId,
+    initialFullName: preservedInitialName,
+    createdAt: existing.createdAt || updateData.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     updatedServerTime: serverTimestamp(),
   };
@@ -675,6 +828,8 @@ export async function updateUserInDb(userId: string, updateData: any) {
   memoryStore.users.set(userId, merged);
   if (merged.phoneNumber) {
     memoryStore.users.set(merged.phoneNumber.replace(/\s+/g, ''), merged);
+    const pKey = normalizePhoneKey(merged.phoneNumber);
+    if (pKey) memoryStore.users.set(pKey, merged);
   }
 
   try {

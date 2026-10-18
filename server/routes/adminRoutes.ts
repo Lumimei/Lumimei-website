@@ -63,6 +63,19 @@ function normalizeCambodianPhone(raw: string): string {
   return '+855' + cleaned;
 }
 
+function isLikelyPhoneNumber(val: string): boolean {
+  if (!val) return false;
+  const clean = val.trim();
+  if (clean.startsWith('+') && /^[\d\s\-()]+$/.test(clean.slice(1))) {
+    return true;
+  }
+  const digits = clean.replace(/[\s\-\(\)\.]/g, '');
+  if (/^\d{6,15}$/.test(digits)) {
+    return true;
+  }
+  return false;
+}
+
 // Standard point values per task type if not explicitly supplied
 const TASK_POINTS_CATALOG: Record<string, { points: number; nameKm: string; nameEn: string; nameZh: string }> = {
   'task-daily-checkin': {
@@ -926,16 +939,43 @@ adminRouter.post('/users', async (req: Request, res: Response) => {
     const formattedPhone = normalizeCambodianPhone(phoneNumber);
     const existing = await findUser(formattedPhone);
 
-    if (existing && existing.id) {
-      return res.status(409).json({
-        success: false,
-        error: 'A customer account with this phone number already exists',
-        msg_km: 'លេខទូរស័ព្ទនេះមានគណនីក្នុងប្រព័ន្ធរួចរាល់ហើយ',
-        msg_zh: '该手机号码已存在客户账户',
-        existingUser: existing,
+    // 【电话号码去重】以"电话号码"作为客户的唯一标识(unique key)
+    // 如果已存在 → 不要新建行,而是更新这个已有电话号码对应的那一行数据,保持这个客户始终只有一行记录
+    if (existing && (existing.id || existing.uid)) {
+      const targetId = existing.id || existing.uid;
+      const updateData: any = {};
+      if (skinConcern) updateData.skinConcern = skinConcern.trim();
+      if (req.body.skinConcerns && Array.isArray(req.body.skinConcerns)) {
+        updateData.skinConcerns = req.body.skinConcerns;
+      }
+      if (req.body.acneDetails) updateData.acneDetails = req.body.acneDetails;
+      if (points !== undefined) {
+        updateData.points = Number(points) >= 0 ? Number(points) : existing.points;
+      }
+      if (tier) updateData.tier = tier;
+      if (status) updateData.status = status;
+      if (note) updateData.note = note.trim();
+      if (email) updateData.email = email.trim();
+      if (telegram) updateData.telegram = telegram.trim();
+      if (gender) updateData.gender = gender;
+      if (cityProvince) updateData.cityProvince = cityProvince;
+
+      // 保留首次创建时的姓名 initialFullName，若已有记录未设置则使用 existing.fullName
+      updateData.initialFullName = existing.initialFullName || existing.fullName || fullName.trim();
+
+      const updatedUser = await updateUserInDb(targetId, updateData);
+
+      return res.status(200).json({
+        success: true,
+        isExistingUpdated: true,
+        message: 'Customer already exists. Profile updated (deduplicated by phone number).',
+        msg_km: 'លេខទូរស័ព្ទនេះមានក្នុងប្រព័ន្ធរួចហើយ ប្រព័ន្ធបានធ្វើបច្ចុប្បន្នភាពទិន្នន័យជោគជ័យ!',
+        msg_zh: '该手机号码已存在，已更新对应客户记录并保持单行唯一！',
+        user: updatedUser,
       });
     }
 
+    // 如果不存在 → 新建一行记录
     const parsedPoints = Number(points) >= 0 ? Number(points) : 15;
     const determinedTier =
       tier ||
@@ -950,6 +990,7 @@ adminRouter.post('/users', async (req: Request, res: Response) => {
     const newUser = await createUserInDb({
       id: `usr_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`,
       phoneNumber: formattedPhone,
+      initialFullName: fullName.trim(),
       fullName: fullName.trim(),
       email: (email || '').trim(),
       telegram: (telegram || '').trim(),
@@ -979,6 +1020,125 @@ adminRouter.post('/users', async (req: Request, res: Response) => {
       success: false,
       error: error.message || 'Failed to create user',
       msg_km: 'មានបញ្ហាបច្ចេកទេសក្នុងការបង្កើតគណនីអតិថិជន',
+    });
+  }
+});
+
+/**
+ * 12b. POST /api/admin/users/verify-login
+ * 【登录姓名校验】客户登录时比对: 数据库里这个电话号码首次创建时保存的姓名与这次登录输入的姓名是否完全一致
+ */
+adminRouter.post('/users/verify-login', async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber, fullName, password, identifier } = req.body;
+    const rawTarget = (phoneNumber || identifier || '').trim();
+
+    if (!rawTarget && !fullName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone number or full name is required',
+        msg_km: 'សូមបញ្ចូលលេខទូរស័ព្ទ ឬឈ្មោះរបស់អ្នក',
+        msg_zh: '请输入手机号码或姓名',
+      });
+    }
+
+    // Try finding by normalized Cambodian phone first, then rawTarget
+    let existing = null;
+    if (rawTarget) {
+      const formattedPhone = normalizeCambodianPhone(rawTarget);
+      existing = await findUser(formattedPhone);
+      if (!existing && formattedPhone !== rawTarget) {
+        existing = await findUser(rawTarget);
+      }
+    }
+
+    // Fallback: If not found by phone and fullName is supplied, try finding by fullName
+    if (!existing && fullName) {
+      existing = await findUser(String(fullName).trim());
+    }
+
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        reason: 'not_found',
+        error: 'No customer account found with this phone number',
+        msg_km: 'រកមិនឃើញគណនីដែលមានលេខទូរស័ព្ទនេះទេ។ សូមពិនិត្យឡើងវិញ ឬចុះឈ្មោះគណនីថ្មី',
+        msg_zh: '未找到该手机号码的客户账户，请核实后重试或前往注册',
+      });
+    }
+
+    // If fullName was provided by user, verify that it matches registered customer record
+    const cleanFullName = fullName ? String(fullName).trim() : '';
+    const isPhoneLikeName = cleanFullName && (
+      isLikelyPhoneNumber(cleanFullName) ||
+      (rawTarget && normalizeCambodianPhone(cleanFullName) === normalizeCambodianPhone(rawTarget))
+    );
+
+    if (cleanFullName && !isPhoneLikeName) {
+      const normalizeClean = (str: string) => str.toLowerCase().replace(/[\s\-_.,#@]+/g, '');
+      const inputName = cleanFullName.toLowerCase();
+      const inNorm = normalizeClean(cleanFullName);
+
+      const candidates = [
+        existing.initialFullName,
+        existing.fullName,
+        existing.displayName,
+        existing.name,
+        existing.telegram,
+      ]
+        .filter(Boolean)
+        .map((n: string) => String(n).trim().toLowerCase());
+
+      const isNameMatch = candidates.length === 0 || candidates.some((cand) => {
+        const cLower = cand.trim().toLowerCase();
+        const cNorm = normalizeClean(cand);
+        return (
+          cLower === inputName ||
+          cLower.includes(inputName) ||
+          inputName.includes(cLower) ||
+          (inNorm.length >= 2 && (cNorm.includes(inNorm) || inNorm.includes(cNorm)))
+        );
+      });
+
+      if (!isNameMatch) {
+        return res.status(401).json({
+          success: false,
+          reason: 'name_mismatch',
+          error: '姓名与注册信息不符,请核实后重试',
+          msg_km: 'ឈ្មោះមិនត្រូវនឹងព័ត៌មានចុះឈ្មោះទេ សូមផ្ទៀងផ្ទាត់រួចព្យាយាមម្តងទៀត',
+          msg_zh: '姓名与注册信息不符,请核实后重试',
+        });
+      }
+    }
+
+    // Sanitize user object for response (remove sensitive internal details)
+    const sanitizedUser = {
+      ...existing,
+      id: existing.id || existing.uid,
+      uid: existing.uid || existing.id,
+      fullName: existing.fullName || existing.displayName || existing.initialFullName || 'អតិថិជន',
+      initialFullName: existing.initialFullName || existing.fullName || existing.displayName,
+      displayName: existing.displayName || existing.fullName || existing.initialFullName,
+      name: existing.name || existing.displayName || existing.fullName,
+      phoneNumber: existing.phoneNumber || rawTarget,
+    };
+
+    return res.status(200).json({
+      success: true,
+      allowed: true,
+      message: 'Verification passed',
+      msg_km: 'ផ្ទៀងផ្ទាត់ជោគជ័យ អនុញ្ញាតអោយចូលប្រើប្រាស់',
+      msg_zh: '账户核验成功，允许登录',
+      user: sanitizedUser,
+    });
+  } catch (error: any) {
+    console.error('Verify login error:', error);
+    return res.status(500).json({
+      success: false,
+      reason: 'server_error',
+      error: error.message || 'Verification failed',
+      msg_km: 'មានបញ្ហាបច្ចេកទេសក្នុងការផ្ទៀងផ្ទាត់',
+      msg_zh: '系统校验异常，请稍后重试',
     });
   }
 });
