@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with points and membership status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "telegram": { "type": "string" },
+        "email": { "type": "string" },
+        "skinConcern": { "type": "string" },
+        "gender": { "type": "string" },
+        "cityProvince": { "type": "string" },
+        "points": { "type": "number" },
+        "tier": { "type": "string" },
+        "status": { "type": "string" },
+        "role": { "type": "string" }
+      }
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Skincare product catalog entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "nameKm": { "type": "string" },
+        "nameZh": { "type": "string" },
+        "priceUsd": { "type": "number" },
+        "priceKhr": { "type": "number" },
+        "image": { "type": "string" },
+        "promoText": { "type": "object" },
+        "descriptionCards": { "type": "array" }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderNumber": { "type": "string" },
+        "totalUsd": { "type": "number" },
+        "totalKhr": { "type": "number" },
+        "orderStatus": { "type": "string" },
+        "paymentStatus": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile records"
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Skincare products"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders"
+    }
+  }
+}

@@ -3,12 +3,51 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lumimei Khmer Skincare & Cosmetics</title>
+    <title>Lumimei - អ្នកឯកទេសថែរក្សាស្បែកមុខ មុខមុនគ្រប់ប្រភេទ</title>
+    <meta name="description" content="យើងជួយថែទាំ និងកែលម្អសុខភាពស្បែកមុខ ដោយប្រើផលិតផលថែស្បែកដែលផ្សំពីគ្រឿងផ្សំធម្មជាតិ មានគុណភាពខ្ពស់ ជួយសន្សំទាំងពេលវេលា និងការចំណាយ។" />
+    <meta property="og:title" content="Lumimei - អ្នកឯកទេសថែរក្សាស្បែកមុខ មុខមុនគ្រប់ប្រភេទ" />
+    <meta property="og:description" content="យើងជួយថែទាំ និងកែលម្អសុខភាពស្បែកមុខ ដោយប្រើផលិតផលថែស្បែកដែលផ្សំពីគ្រឿងផ្សំធម្មជាតិ មានគុណភាពខ្ពស់ ជួយសន្សំទាំងពេលវេលា និងការចំណាយ។" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Battambang:wght@100;300;400;700;900&family=Koulen&family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Battambang:wght@400;700;900&family=Kantumruy+Pro:wght@400;600;700&family=Koulen&family=Moul&family=Noto+Sans+Khmer:wght@400;500;600;700;800&family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+    <script>
+      // Fix for React 19 dev mode bug (#34840) with cross-origin iframes (e.g. Firebase Auth & AI Studio preview frame):
+      // ReactFiberPerformanceTrack tries to read $$typeof on cross-origin Window objects during props diffing.
+      // Setting console.timeStamp = undefined disables supportsUserTiming in react-dom-client, preventing the SecurityError.
+      try {
+        if (typeof console !== 'undefined') {
+          Object.defineProperty(console, 'timeStamp', {
+            value: undefined,
+            configurable: true,
+            writable: true,
+          });
+        }
+      } catch (_) {}
+
+      window.addEventListener(
+        'error',
+        function(e) {
+          var msg = (e && (e.message || (e.error && e.error.message))) || '';
+          if (
+            msg.indexOf("$$typeof") !== -1 ||
+            msg.indexOf("cross-origin") !== -1 ||
+            msg.indexOf("Should not already be working") !== -1 ||
+            msg.indexOf("Blocked a frame with origin") !== -1 ||
+            msg.indexOf("reading 'style'") !== -1
+          ) {
+            if (e.preventDefault) e.preventDefault();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+            return true;
+          }
+        },
+        true
+      );
+    </script>
   </head>
   <body>
+    <!-- Permanent invisible reCAPTCHA mount containers to prevent null.style DOM teardown errors -->
+    <div id="recaptcha-container" style="display:none;" aria-hidden="true"></div>
+    <div id="recaptcha-change-phone-container" style="display:none;" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
