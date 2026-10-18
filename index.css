@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+@theme {
+  --color-lumimei-green: #2E8B57;
+  --color-lumimei-white: #FFFFFF;
+  --color-lumimei-orange: #FF7F50;
+  --color-lumimei-gray: #E5E5E5;
+  --color-lumimei-beige: #F5DEB3;
+}
+
+:root {
+  --lumimei-green: #2E8B57;
+  --lumimei-white: #FFFFFF;
+  --lumimei-orange: #FF7F50;
+  --lumimei-gray: #E5E5E5;
+  --lumimei-beige: #F5DEB3;
+}
+
+body {
+  background-color: #FFFFFF;
+  color: #2E8B57;
+  font-family: 'Battambang', 'Open Sans', system-ui, -apple-system, sans-serif;
+}
+
+/* Base text on white or beige surfaces is always Lumimei primary green #2E8B57 */
+.text-lumimei-green {
+  color: #2E8B57 !important;
+}
+
+.bg-lumimei-green {
+  background-color: #2E8B57 !important;
+  color: #FFFFFF !important;
+}
+
+.border-lumimei-green {
+  border-color: #2E8B57 !important;
+}
+
+.bg-lumimei-orange {
+  background-color: #FF7F50 !important;
+  color: #FFFFFF !important;
+}
+
+.bg-lumimei-gray {
+  background-color: #E5E5E5 !important;
+  color: #FFFFFF !important;
+}
+
+.bg-lumimei-beige {
+  background-color: #F5DEB3 !important;
+  color: #2E8B57 !important;
+}
+
+/* Selection state helpers */
+.ui-unselected {
+  background-color: #E5E5E5 !important;
+  color: #FFFFFF !important;
+  border-color: #E5E5E5 !important;
+}
+
+.ui-selected {
+  background-color: #2E8B57 !important;
+  color: #FFFFFF !important;
+  border-color: #2E8B57 !important;
+}
+
+.font-noto-sans-khmer {
+  font-family: 'Noto Sans Khmer', 'Battambang', system-ui, sans-serif;
+}
+
+.font-koulen {
+  font-family: 'Koulen', 'Noto Sans Khmer', 'Battambang', 'Open Sans', sans-serif;
+}
+
+.font-opensans {
+  font-family: 'Open Sans', 'Noto Sans Khmer', 'Battambang', sans-serif;
+}
+
+.font-battambang {
+  font-family: 'Noto Sans Khmer', 'Battambang', 'Khmer OS Battambang', 'Open Sans', sans-serif;
+}
+
+@keyframes scanLine {
+  0% {
+    top: 5%;
+  }
+  50% {
+    top: 90%;
+  }
+  100% {
+    top: 5%;
+  }
+}
+
+.animate-scanLine {
+  animation: scanLine 2.5s ease-in-out infinite;
+}
+
