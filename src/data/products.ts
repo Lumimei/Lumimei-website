@@ -30,7 +30,7 @@ export const PRODUCTS: Product[] = [
   {
     id: 'p1',
     name: 'Acne Care Set (Large)',
-    nameKm: 'ឈុតថែរក្សាមុខមុន(ធំ)',
+    nameKm: 'ឈុតថែរក្សាមុខមុន Lumimei (ធំ)',
     nameZh: 'Lumimei 祛痘修护大套装',
     brand: 'Lumimei Cambodia',
     category: 'best-seller',
@@ -92,12 +92,33 @@ export const PRODUCTS: Product[] = [
     ],
     howToUseKm: '១. លាងមុខឱ្យស្អាត ដួសម្សៅ ២-៣ ស្លាបព្រាកាហ្វេ ដាក់នៅក្នុងកូនចានមួយ\n២. លាយជាមួយនឹងទឹកស្អាតធម្មតា ឬទឹកដោះគោស្រស់ រួចកូឱ្យវាក្លាយជាល្បាយតែមួយ\n៣. បិទលើមុខទុកចោល 15 នាទី រួចលាងចេញ\n៤. ពេលលាងហើយ ត្រូវលាងជាមួយនឹងសាប៊ូមួយតង់ទៀត\n៥. ចំពោះអ្នកប្រើប្រាស់ថ្មីៗ មួយអាទិត្យដំបូងបិទរាល់ថ្ងៃ ក្រោយពីមួយអាទិត្យហើយ អាចបិទ ២ ថ្ងៃម្ដង។',
     videoUrl: 'https://youtube.com/shorts/0MqVvrtIGWI?si=vDuVN86Iby5Zijni',
-    newUserGuideKm: '🌿 ផលិតផលធម្មជាតិ៖ ប្រើដំបូង "រាងរើសស្បែក" តែលទ្ធផលក្រោយមក "ដឹងតែស្អាតប្លែក" ✨ មិនខកបំណង!\n\nស្បែកខ្លះធ្លាប់ឆ្លងកាត់ជាតិគីមី ឬមានកោសិកាចាស់កកស្ទះច្រើន ពេលប្រើដំបូងអាចមានអារម្មណ៍ថាក្ដៅ រមាស់ ឬស្ងួតបន្តិច ព្រោះវាជាវគ្គ "ជម្រុះជាតិពុល និងបន្សាំស្បែក"។ នេះជាសញ្ញាបង្ហាញថា សារធាតុផ្សំធម្មជាតិកំពុងចូលទៅធ្វើការយ៉ាងសកម្ម ដើម្បីជម្រុះកាកសំណល់ចាស់ៗ និងកោសិកាងាប់ៗចេញពីរន្ធរោម។\n\n❌ មិនមែនប្រតិកម្មរោលខូចស្បែកទេ តែជាដំណើរការជួសជុលកោសិកាពីខាងក្នុង។ ទ្រាំអត់ធ្មត់ដំបូង ១-២ សប្ដាហ៍ ស្បែកនឹងចាប់ផ្ដើមប្លែក ភ្លឺថ្លា ម៉ត់ខៃ មានសុខភាពល្អពិតប្រាកដ។'
+    newUserGuideKm: '🌿 ផលិតផលធម្មជាតិ៖ ប្រើដំបូង "រាងរើសស្បែក" តែលទ្ធផលក្រោយមក "ដឹងតែស្អាតប្លែក" ✨ មិនខកបំណង!\n\nស្បែកខ្លះធ្លាប់ឆ្លងកាត់ជាតិគីមី ឬមានកោសិកាចាស់កកស្ទះច្រើន ពេលប្រើដំបូងអាចមានអារម្មណ៍ថាក្ដៅ រមាស់ ឬស្ងួតបន្តិច ព្រោះវាជាវគ្គ "ជម្រុះជាតិពុល និងបន្សាំស្បែក"។ នេះជាសញ្ញាបង្ហាញថា សារធាតុផ្សំធម្មជាតិកំពុងចូលទៅធ្វើការយ៉ាងសកម្ម ដើម្បីជម្រុះកាកសំណល់ចាស់ៗ និងកោសិកាងាប់ៗចេញពីរន្ធរោម។\n\n❌ មិនមែនប្រតិកម្មរោលខូចស្បែកទេ តែជាដំណើរការជួសជុលកោសិកាពីខាងក្នុង។ ទ្រាំអត់ធ្មត់ដំបូង ១-២ សប្ដាហ៍ ស្បែកនឹងចាប់ផ្ដើមប្លែក ភ្លឺថ្លា ម៉ត់ខៃ មានសុខភាពល្អពិតប្រាកដ។',
+    promoText: {
+      enabled: true,
+      badge: '🔥 ប្រូម៉ូសិនពិសេសប្រចាំខែ',
+      title: 'ឈុតថែរក្សាមុខមុន Lumimei ធម្មជាតិ ១០០% - ទិញភ្លាម ថែមជូនកាដូពិសេស!',
+      content:
+        '✨ ជួយព្យាបាលមុនកប់ មុនរលាក មុនក្បាលខ្មៅ និងបឺតជាតិពុលកកស្ទះក្នុងរន្ធញើសយ៉ាងមានប្រសិទ្ធភាព\n\n' +
+        'អត្ថប្រយោជន៍ និងការថែមជូនពិសេស៖\n' +
+        '1. ដឹកជញ្ជូនឥតគិតថ្លៃ (Free Delivery) ទូទាំងប្រទេសកម្ពុជា\n' +
+        '2. ទទួលបានពិន្ទុ Lumimei Points ទ្វេដងសម្រាប់ការបញ្ជាទិញលើកនេះ\n' +
+        '3. ទទួលបានការប្រឹក្សាស្បែកមុខផ្ទាល់ពីអ្នកជំនាញដោយឥតគិតថ្លៃ',
+      fontFamily: 'Battambang',
+      primaryColor: '#2E8B57',
+      backgroundColor: 'tint',
+      titleFontSize: 'lg',
+      contentFontSize: 'sm',
+      listType: 'bullet',
+      bulletItems: [
+        'ផ្សំពីរុក្ខជាតិធម្មជាតិសុទ្ធ ១០០% គ្មានជាតិកាត់ ឬសារធាតុគីមីគ្រោះថ្នាក់',
+        'ជម្រុះកោសិកាចាស់ៗ និងជួយឱ្យស្បែកមុខទន់រលោង ភ្លឺថ្លាចេញពីខាងក្នុង',
+      ],
+    },
   },
   {
     id: 'p2',
     name: 'Acne Care Set (Small)',
-    nameKm: 'ឈុតថែរក្សាមុខមុន(តូច)',
+    nameKm: 'ឈុតថែរក្សាមុខមុន Lumimei (តូច)',
     nameZh: 'Lumimei 祛痘修护小套装',
     brand: 'Lumimei Cambodia',
     category: 'best-seller',
@@ -205,6 +226,33 @@ export const PRODUCTS: Product[] = [
     ingredients: 'Coconut Oil, Glycerin, Herbal Extracts, Tocopherol (Vitamin E).',
     stock: 90,
     volume: '6 x 100g'
+  },
+  {
+    id: 'p6',
+    name: 'Triple Cleansing Set',
+    nameKm: 'ឈុតលាងមុខ៣តង់',
+    nameZh: 'Lumimei 三重净肤清洁套装',
+    brand: 'Lumimei Cambodia',
+    category: 'promotion',
+    priceUsd: 25.00,
+    priceKhr: Math.round(25.00 * KHR_RATE),
+    originalPriceUsd: 30.00,
+    rating: 0,
+    reviewCount: 0,
+    image: 'https://i.postimg.cc/Dz534vg7/IMG-20260708-135255.png',
+    gallery: ['https://i.postimg.cc/Dz534vg7/IMG-20260708-135255.png', riceMaskImg, coconutOilImg, soapImg],
+    isBestSeller: true,
+    isFreeShipping: true,
+    skinTypes: ['all', 'acne', 'oily', 'combination', 'sensitive', 'dry'],
+    skinConcerns: ['acne', 'brightening', 'hydration'],
+    description: 'Triple Cleansing Set includes Rice Mask, Virgin Coconut Oil, and Herbal Soap for deep pore purification and gentle makeup removal.',
+    descriptionKm: 'ឈុតលាងមុខ៣តង់ រួមមាន Lumimei ម៉ាសអង្ករ, Lumimei ប្រេងដូង និង Lumimei សាប៊ូ ជួយបឺតជាតិពុល ជម្រុះកោសិកាងាប់ៗ remove makeup បានស្អាតល្អ និងផ្ដល់សំណើមស្បែក (Free ដឹកជញ្ជូន)។',
+    descriptionZh: 'Lumimei 三重净肤清洁套装，包含大米面膜、冷榨椰子油与草本手工皂，深层净透毛孔，温和卸妆。',
+    howToUse: 'Use coconut oil to remove makeup, cleanse with herbal soap, and apply rice mask 1-2 times weekly.',
+    howToUseKm: 'ប្រើប្រេងដូងជូត remove makeup រួចលាងជាមួយសាប៊ូ និងបិទម៉ាសអង្ករ ១–២ ដងក្នុងមួយសប្ដាហ៍។',
+    ingredients: 'អង្ករ (Rice), ប្រេងដូង (Coconut Oil), សាប៊ូរុក្ខជាតិ (Herbal Soap)',
+    stock: 100,
+    volume: 'ឈុត ៣ មុខ'
   }
 ];
 
@@ -246,3 +294,76 @@ export const BEAUTY_TIPS: BeautyTip[] = [
 ];
 
 export const SAMPLE_REVIEWS: Review[] = [];
+
+/**
+ * Normalizes any legacy or alias product ID to standard store product ID
+ */
+export function normalizeProductId(id: string): string {
+  if (!id) return 'p1';
+  const cleanId = id.trim().toLowerCase();
+  if (
+    cleanId === 'rice_mask' ||
+    cleanId === 'p-rice-mask' ||
+    cleanId === 'set_acne_large' ||
+    cleanId === 'acne_care_large' ||
+    cleanId === 'mask'
+  ) {
+    return 'p1';
+  }
+  if (
+    cleanId === 'cleansing_3_step' ||
+    cleanId === 'triple_cleansing' ||
+    cleanId === 'triple_cleanse' ||
+    cleanId === 'cleansing_3_tong' ||
+    cleanId === 'p6'
+  ) {
+    return 'p6';
+  }
+  if (
+    cleanId === 'serum' ||
+    cleanId === 'p-serum' ||
+    cleanId === 'set_acne_small' ||
+    cleanId === 'acne_care_small'
+  ) {
+    return 'p2';
+  }
+  if (
+    cleanId === 'coconut_oil' ||
+    cleanId === 'p-coconut-oil' ||
+    cleanId === 'double_cleansing' ||
+    cleanId === 'cleansing_2_step'
+  ) {
+    return 'p3';
+  }
+  if (
+    cleanId === 'soap' ||
+    cleanId === 'p-soap' ||
+    cleanId === 'soap_3' ||
+    cleanId === 'soap3'
+  ) {
+    return 'p4';
+  }
+  if (cleanId === 'soap_6' || cleanId === 'soap6') {
+    return 'p5';
+  }
+  return id;
+}
+
+/**
+ * Retrieves a product from the single source of truth (PRODUCTS) by ID or alias
+ */
+export function getProductById(id: string, catalog?: Product[]): Product | undefined {
+  const normId = normalizeProductId(id);
+  const list = catalog && catalog.length > 0 ? catalog : PRODUCTS;
+  return list.find((p) => p.id === normId || p.id === id);
+}
+
+/**
+ * Retrieves a product with safe fallback to the primary set (p1) if not found
+ */
+export function getProductByIdOrFallback(id: string, catalog?: Product[]): Product {
+  const found = getProductById(id, catalog);
+  if (found) return found;
+  const list = catalog && catalog.length > 0 ? catalog : PRODUCTS;
+  return list[0] || PRODUCTS[0];
+}

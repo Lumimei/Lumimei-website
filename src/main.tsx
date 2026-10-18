@@ -1,5 +1,23 @@
 // Comprehensive error suppression & network safety interceptor for clean console
 if (typeof window !== 'undefined') {
+  // Guard window and Window.prototype against cross-frame $$typeof property inspection
+  try {
+    if (!('$$typeof' in window)) {
+      Object.defineProperty(window, '$$typeof', {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+    }
+    if (typeof Window !== 'undefined' && Window.prototype && !('$$typeof' in Window.prototype)) {
+      Object.defineProperty(Window.prototype, '$$typeof', {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+    }
+  } catch {}
+
   const isBenignNoiseError = (...args: any[]): boolean => {
     const text = args
       .map((a) => {
@@ -39,7 +57,13 @@ if (typeof window !== 'undefined') {
       lower.includes('no id or name found in config') ||
       lower.includes('found in config') ||
       lower.includes('generateaccesstoken') ||
-      lower.includes('alkalimakersuite')
+      lower.includes('alkalimakersuite') ||
+      lower.includes("failed to read a named property '$$typeof'") ||
+      lower.includes("blocked a frame with origin") ||
+      lower.includes("should not already be working") ||
+      lower.includes("cross-origin frame") ||
+      lower.includes("cannot read properties of null (reading 'style')") ||
+      lower.includes("reading 'style'")
     );
   };
 

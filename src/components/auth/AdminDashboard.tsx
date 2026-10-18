@@ -9,7 +9,6 @@ import {
   Search,
   RefreshCw,
   LogOut,
-  ExternalLink,
   AlertCircle,
   ImageIcon,
   X,
@@ -18,6 +17,9 @@ import {
   Edit,
   Trash2,
   UploadCloud,
+  Upload,
+  Camera,
+  Loader2,
   DollarSign,
   Tag,
   Sparkles,
@@ -39,7 +41,6 @@ import {
   Settings,
   Power,
   Cpu,
-  LayoutDashboard,
   Home,
   TrendingUp,
   Coins,
@@ -47,7 +48,7 @@ import {
   Clock,
   CheckCircle,
 } from 'lucide-react';
-import { Language, Product, SkinType, ProductDescriptionCard } from '../../types';
+import { Language, Product, SkinType, ProductDescriptionCard, ProductPromoText } from '../../types';
 import { CATEGORIES, SKIN_CONCERNS, BRANDS, KHR_RATE } from '../../data/products';
 import {
   getAllStoredProducts,
@@ -61,6 +62,8 @@ import { CustomerManagement } from '../admin/CustomerManagement';
 import { OrderManagement, AdminOrder } from '../admin/OrderManagement';
 import { VerifyManagement } from '../admin/VerifyManagement';
 import { FinancialManagementModal } from '../admin/FinancialManagementModal';
+import { PromoCodeManagementModal } from '../admin/PromoCodeManagementModal';
+import { ProductPromoEditor } from '../admin/ProductPromoEditor';
 import { subscribeToQuizSubmissions, QuizSubmission } from '../../lib/quizSubmissionService';
 import { subscribeToExpenses, ExpenseRecord } from '../../lib/expenseService';
 import { getMockUsers, db, collection, onSnapshot } from '../../lib/firebase';
@@ -71,35 +74,41 @@ interface AdminDashboardProps {
   onNavigateHome: () => void;
 }
 
-const ensureNineMainImages = (primaryImage?: string, gallery?: string[]): string[] => {
+const loadMainImages = (primaryImage?: string, gallery?: string[]): string[] => {
   const list: string[] = [];
   if (primaryImage) {
     list.push(primaryImage);
   }
   if (gallery && Array.isArray(gallery)) {
     gallery.forEach((img) => {
-      if (img && (img !== primaryImage || list.filter((x) => x === img).length < gallery.filter((x) => x === img).length)) {
+      if (img && !list.includes(img)) {
         list.push(img);
       }
     });
   }
-  while (list.length < 9) {
-    list.push('');
-  }
-  return list.slice(0, 9);
+  return list.length > 0 ? list : [''];
 };
 
-const ensureTenCards = (existing?: ProductDescriptionCard[]): ProductDescriptionCard[] => {
-  const list: ProductDescriptionCard[] = existing && existing.length > 0 ? existing.map((c) => ({ ...c })) : [];
-  for (let i = list.length; i < 10; i++) {
-    list.push({
-      id: `card_${i + 1}`,
+const ensureNineMainImages = loadMainImages;
+
+const normalizeCards = (existing?: ProductDescriptionCard[]): ProductDescriptionCard[] => {
+  if (existing && existing.length > 0) {
+    return existing.map((c, i) => ({
+      id: c.id || `card_${i + 1}`,
+      image: c.image || '',
+      caption: c.caption || '',
+    }));
+  }
+  return [
+    {
+      id: 'card_1',
       image: '',
       caption: '',
-    });
-  }
-  return list.slice(0, 10);
+    },
+  ];
 };
+
+const ensureTenCards = normalizeCards;
 
 const ALL_SKIN_TYPES: { id: SkinType; labelKm: string; labelEn: string }[] = [
   { id: 'all', labelKm: 'គ្រប់ប្រភេទស្បែក (All)', labelEn: 'All Skin Types' },
@@ -117,19 +126,29 @@ const INITIAL_FORM_STATE: Partial<Product> = {
   nameKm: '',
   nameZh: '',
   brand: 'Lumimei Cambodia',
-  category: 'best-seller',
+  category: 'none',
   priceUsd: 0,
   priceKhr: 0,
   originalPriceUsd: 0,
+  discountCode: '',
+  discountPercent: 0,
   pointsCost: 0,
   rating: 5,
   reviewCount: 0,
   image: '',
+  imageKm: '',
+  imageEn: '',
+  imageZh: '',
   gallery: [],
-  descriptionCards: ensureTenCards([]),
+  galleryKm: [],
+  galleryEn: [],
+  galleryZh: [],
+  promoText: undefined,
+  descriptionCards: [{ id: 'card_1', image: '', caption: '' }],
   isNew: true,
   isBestSeller: false,
   isFreeShipping: true,
+  isPromotion: false,
   skinTypes: ['all'],
   skinConcerns: ['all'],
   description: '',
@@ -173,6 +192,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Financial Management Modal State
   const [isFinancialModalOpen, setIsFinancialModalOpen] = useState(false);
 
+  // Promo Code Management Modal State
+  const [isPromoModalOpen, setIsPromoModalOpen] = useState(false);
+
   // Live Statistics for the 5 Cards
   const [pendingVerifyCount, setPendingVerifyCount] = useState<number>(0);
   const [verifiedQuizCount, setVerifiedQuizCount] = useState<number>(0);
@@ -206,10 +228,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Real-time synchronization for Quiz Submissions (Verify card)
   useEffect(() => {
     const unsubscribeSubmissions = subscribeToQuizSubmissions((list) => {
-      const pending = list.filter((item) => item.status === 'pending').length;
-      const verified = list.filter((item) => item.status === 'verified').length;
-      setPendingVerifyCount(pending);
-      setVerifiedQuizCount(verified);
+      const phoneSet = new Set<string>();
+      let totalAns = 0;
+      list.forEach((item) => {
+        const rawPhone = item.customerPhone?.trim() || '';
+        const normPhone = rawPhone.replace(/[^\d+]/g, '');
+        const key = normPhone || item.userId || item.customerName || item.id;
+        phoneSet.add(key);
+        if (Array.isArray(item.answers)) {
+          totalAns += item.answers.length;
+        } else {
+          totalAns += 1;
+        }
+      });
+      setPendingVerifyCount(phoneSet.size);
+      setVerifiedQuizCount(totalAns);
     });
 
     const unsubscribeExpenses = subscribeToExpenses((expenses) => {
@@ -293,6 +326,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isEditingProduct, setIsEditingProduct] = useState(false);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [productForm, setProductForm] = useState<Partial<Product>>(INITIAL_FORM_STATE);
+  const [mainImageLanguage, setMainImageLanguage] = useState<'km' | 'en' | 'zh'>('km');
+  const [productImagesByLang, setProductImagesByLang] = useState<{
+    km: string[];
+    en: string[];
+    zh: string[];
+  }>({
+    km: Array(9).fill(''),
+    en: Array(9).fill(''),
+    zh: Array(9).fill(''),
+  });
+  const [uploadingSlotIdx, setUploadingSlotIdx] = useState<number | null>(null);
+  const slotFileInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const generalFileInputRef = useRef<HTMLInputElement | null>(null);
   const [benefitInput, setBenefitInput] = useState('');
   const [productSavedFeedback, setProductSavedFeedback] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -301,8 +347,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Sync products in real-time from Firestore Cloud
   useEffect(() => {
@@ -414,8 +458,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setProductForm({
       ...INITIAL_FORM_STATE,
       id: `prod_${Date.now()}`,
-      descriptionCards: ensureTenCards([]),
+      promoText: undefined,
+      descriptionCards: [{ id: 'card_1', image: '', caption: '' }],
     });
+    setProductImagesByLang({
+      km: [''],
+      en: [''],
+      zh: [''],
+    });
+    setMainImageLanguage('km');
     setEditingProductId(null);
     setIsEditingProduct(true);
     setBenefitInput('');
@@ -425,8 +476,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleStartEditProduct = (prod: Product) => {
     setProductForm({
       ...prod,
-      descriptionCards: ensureTenCards(prod.descriptionCards),
+      isPromotion: !!prod.isPromotion,
+      promoText: prod.promoText ? { ...prod.promoText } : undefined,
+      descriptionCards:
+        prod.descriptionCards && prod.descriptionCards.length > 0
+          ? prod.descriptionCards.map((c, i) => ({
+              id: c.id || `card_${i + 1}`,
+              image: c.image || '',
+              caption: c.caption || '',
+            }))
+          : [{ id: 'card_1', image: '', caption: '' }],
     });
+    setProductImagesByLang({
+      km: loadMainImages(prod.imageKm || prod.image, prod.galleryKm || prod.gallery),
+      en: loadMainImages(prod.imageEn, prod.galleryEn),
+      zh: loadMainImages(prod.imageZh, prod.galleryZh),
+    });
+    setMainImageLanguage('km');
     setEditingProductId(prod.id);
     setIsEditingProduct(true);
     setBenefitInput('');
@@ -439,7 +505,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setEditingProductId(null);
     setProductForm({
       ...INITIAL_FORM_STATE,
-      descriptionCards: ensureTenCards([]),
+      promoText: undefined,
+      descriptionCards: [{ id: 'card_1', image: '', caption: '' }],
+    });
+    setProductImagesByLang({
+      km: [''],
+      en: [''],
+      zh: [''],
     });
   };
 
@@ -488,22 +560,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const getMainImages = (): string[] => {
-    return ensureNineMainImages(productForm.image, productForm.gallery);
+    return productImagesByLang[mainImageLanguage] || [''];
   };
 
   const updateMainImageSlot = (index: number, url: string) => {
-    setProductForm((prev) => {
-      const currentList = ensureNineMainImages(prev.image, prev.gallery);
-      currentList[index] = url;
-
-      const validList = currentList.filter(Boolean);
-      const newPrimary = currentList[0] || (validList.length > 0 ? validList[0] : '');
-      const newGallery = currentList.filter(Boolean);
-
+    setProductImagesByLang((prev) => {
+      const list = [...(prev[mainImageLanguage] || [''])];
+      list[index] = url;
       return {
         ...prev,
-        image: newPrimary,
-        gallery: newGallery,
+        [mainImageLanguage]: list,
       };
     });
   };
@@ -512,34 +578,93 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     updateMainImageSlot(index, '');
   };
 
-  const handleMoveMainImage = (fromIndex: number, direction: 'left' | 'right') => {
-    const toIndex = direction === 'left' ? fromIndex - 1 : fromIndex + 1;
-    if (toIndex < 0 || toIndex >= 9) return;
-
-    setProductForm((prev) => {
-      const currentList = ensureNineMainImages(prev.image, prev.gallery);
-      const temp = currentList[fromIndex];
-      currentList[fromIndex] = currentList[toIndex];
-      currentList[toIndex] = temp;
-
-      const validList = currentList.filter(Boolean);
-      const newPrimary = currentList[0] || (validList.length > 0 ? validList[0] : '');
-      const newGallery = currentList.filter(Boolean);
-
+  const handleAddMainImageSlot = () => {
+    setProductImagesByLang((prev) => {
+      const list = [...(prev[mainImageLanguage] || [])];
       return {
         ...prev,
-        image: newPrimary,
-        gallery: newGallery,
+        [mainImageLanguage]: [...list, ''],
+      };
+    });
+  };
+
+  const handleDeleteMainImage = (index: number) => {
+    setProductImagesByLang((prev) => {
+      const list = [...(prev[mainImageLanguage] || [])];
+      if (list.length <= 1) {
+        return {
+          ...prev,
+          [mainImageLanguage]: [''],
+        };
+      }
+      list.splice(index, 1);
+      return {
+        ...prev,
+        [mainImageLanguage]: list,
+      };
+    });
+  };
+
+  const handleMoveMainImage = (fromIndex: number, direction: 'left' | 'right') => {
+    setProductImagesByLang((prev) => {
+      const list = [...(prev[mainImageLanguage] || [])];
+      const toIndex = direction === 'left' ? fromIndex - 1 : fromIndex + 1;
+      if (toIndex < 0 || toIndex >= list.length) return prev;
+      const temp = list[fromIndex];
+      list[fromIndex] = list[toIndex];
+      list[toIndex] = temp;
+      return {
+        ...prev,
+        [mainImageLanguage]: list,
+      };
+    });
+  };
+
+  const handleAddDescriptionCard = () => {
+    setProductForm((prev) => {
+      const currentCards = prev.descriptionCards ? [...prev.descriptionCards] : [];
+      return {
+        ...prev,
+        descriptionCards: [
+          ...currentCards,
+          {
+            id: `card_${Date.now()}_${currentCards.length + 1}`,
+            image: '',
+            caption: '',
+          },
+        ],
+      };
+    });
+  };
+
+  const handleDeleteDescriptionCard = (index: number) => {
+    setProductForm((prev) => {
+      const currentCards = prev.descriptionCards ? [...prev.descriptionCards] : [];
+      if (currentCards.length <= 1) {
+        return {
+          ...prev,
+          descriptionCards: [
+            {
+              id: `card_${Date.now()}_1`,
+              image: '',
+              caption: '',
+            },
+          ],
+        };
+      }
+      currentCards.splice(index, 1);
+      return {
+        ...prev,
+        descriptionCards: currentCards,
       };
     });
   };
 
   const handleMoveCard = (fromIndex: number, direction: 'left' | 'right') => {
-    const toIndex = direction === 'left' ? fromIndex - 1 : fromIndex + 1;
-    if (toIndex < 0 || toIndex >= 10) return;
-
     setProductForm((prev) => {
-      const cards = ensureTenCards(prev.descriptionCards);
+      const cards = [...(prev.descriptionCards || [])];
+      const toIndex = direction === 'left' ? fromIndex - 1 : fromIndex + 1;
+      if (toIndex < 0 || toIndex >= cards.length) return prev;
       const temp = cards[fromIndex];
       cards[fromIndex] = cards[toIndex];
       cards[toIndex] = temp;
@@ -552,11 +677,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const updateCardField = (index: number, field: 'image' | 'caption', value: string) => {
     setProductForm((prev) => {
-      const cards = ensureTenCards(prev.descriptionCards);
-      cards[index] = {
-        ...cards[index],
-        [field]: value,
-      };
+      const cards = [...(prev.descriptionCards || [])];
+      if (cards[index]) {
+        cards[index] = {
+          ...cards[index],
+          [field]: value,
+        };
+      }
       return {
         ...prev,
         descriptionCards: cards,
@@ -568,111 +695,90 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     updateCardField(index, 'image', '');
   };
 
-  const handleAddNewCardSlot = () => {
-    const cards = ensureTenCards(productForm.descriptionCards);
-    const emptyIndex = cards.findIndex((c) => !c.image);
-    if (emptyIndex !== -1) {
-      cardFileInputRefs.current[emptyIndex]?.click();
-    } else {
-      alert('អ្នកបានបញ្ចូលរូបភាពគ្រប់ចំនួន ១០ រួចហើយ!');
-    }
-  };
-
-  const handleProcessFileUpload = async (file: File) => {
+  const handleSlotFileUpload = async (slotIdx: number, file: File) => {
     if (!file) return;
-
-    // Validate image format
     const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
     if (!validTypes.includes(file.type) && !/\.(png|jpg|jpeg|webp)$/i.test(file.name)) {
       setUploadError('សូមជ្រើសរើសប្រភេទរូបភាព PNG, JPG, JPEG ឬ WEBP ប៉ុណ្ណោះ');
       return;
     }
-
-    // Size limit check (20MB)
     if (file.size > 20 * 1024 * 1024) {
       setUploadError('ទំហំរូបភាពត្រូវតែតូចជាង 20MB');
       return;
     }
 
     setUploadError(null);
-    setIsUploadingImage(true);
+    setUploadingSlotIdx(slotIdx);
 
     try {
-      // 1. Upload file to backend POST /api/upload
       const uploadRes = await uploadImageFile(file);
-
       if (uploadRes.success && uploadRes.url) {
-        setProductForm((prev) => ({
-          ...prev,
-          image: uploadRes.url,
-          gallery: prev.gallery && prev.gallery.length > 0 ? [uploadRes.url, ...prev.gallery.slice(1)] : [uploadRes.url],
-        }));
-
-        // If currently editing an existing product, auto-sync image with backend
-        if (editingProductId) {
-          fetch('/api/admin/product/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productId: editingProductId,
-              imageUrl: uploadRes.url,
-            }),
-          }).catch((err) => console.warn('Product image sync notice:', err));
-        }
+        updateMainImageSlot(slotIdx, uploadRes.url);
       } else {
-        // Fallback: convert to base64 DataURL if server upload had network issues
         const reader = new FileReader();
         reader.onload = () => {
           if (typeof reader.result === 'string') {
-            setProductForm((prev) => ({
-              ...prev,
-              image: reader.result as string,
-            }));
+            updateMainImageSlot(slotIdx, reader.result as string);
           }
         };
         reader.readAsDataURL(file);
         if (uploadRes.error) {
-          setUploadError(`ការអាប់ឡូតទៅ Server: ${uploadRes.error}`);
+          setUploadError(`Server upload notice: ${uploadRes.error}`);
         }
       }
     } catch (err: any) {
-      console.error('File upload error:', err);
+      console.error('Slot upload error:', err);
+      setUploadError(err.message || 'ការអាប់ឡូតរូបភាពមិនបានជោគជ័យ');
+    } finally {
+      setUploadingSlotIdx(null);
+    }
+  };
+
+  const handleGeneralFileUpload = async (files: FileList | File[]) => {
+    if (!files || files.length === 0) return;
+    setUploadError(null);
+    setIsUploadingImage(true);
+
+    try {
+      const fileArray = Array.from(files);
+      for (const file of fileArray) {
+        const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+        if (!validTypes.includes(file.type) && !/\.(png|jpg|jpeg|webp)$/i.test(file.name)) {
+          continue;
+        }
+        if (file.size > 20 * 1024 * 1024) continue;
+
+        const uploadRes = await uploadImageFile(file);
+        let finalUrl = uploadRes.url;
+        if (!finalUrl) {
+          finalUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve((reader.result as string) || '');
+            reader.readAsDataURL(file);
+          });
+        }
+
+        if (finalUrl) {
+          setProductImagesByLang((prev) => {
+            const list = [...(prev[mainImageLanguage] || [])];
+            const firstEmpty = list.findIndex((img) => !img);
+            if (firstEmpty !== -1) {
+              list[firstEmpty] = finalUrl;
+            } else {
+              list.push(finalUrl);
+            }
+            return {
+              ...prev,
+              [mainImageLanguage]: list.length > 0 ? list : [finalUrl],
+            };
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error('General upload error:', err);
       setUploadError(err.message || 'ការអាប់ឡូតរូបភាពមិនបានជោគជ័យ');
     } finally {
       setIsUploadingImage(false);
-    }
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      handleProcessFileUpload(file);
-    }
-    // Reset file input so same file can be re-selected if desired
-    if (e.target) {
-      e.target.value = '';
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-    const files = e.dataTransfer.files;
-    if (files && files.length > 0) {
-      handleProcessFileUpload(files[0]);
     }
   };
 
@@ -728,17 +834,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     const prodId = productForm.id || `prod_${Date.now()}`;
-    const cards = ensureTenCards(productForm.descriptionCards).filter((c) => c.image || c.caption);
-    const mainImagesList = ensureNineMainImages(productForm.image, productForm.gallery).filter(Boolean);
+    const cards = (productForm.descriptionCards || []).filter((c) => c.image || c.caption);
+    const kmImagesList = productImagesByLang.km.filter(Boolean);
+    const enImagesList = productImagesByLang.en.filter(Boolean);
+    const zhImagesList = productImagesByLang.zh.filter(Boolean);
+
+    const mainImagesList = kmImagesList.length > 0 ? kmImagesList : [productForm.image || ''].filter(Boolean);
     const mainImage =
-      mainImagesList[0] ||
+      kmImagesList[0] ||
       productForm.image ||
       (cards.length > 0 && cards[0].image
         ? cards[0].image
         : 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&q=80&w=600');
     const galleryImages =
-      mainImagesList.length > 0
-        ? mainImagesList
+      kmImagesList.length > 0
+        ? kmImagesList
         : [mainImage, ...cards.map((c) => c.image).filter(Boolean)].filter((v, i, a) => v && a.indexOf(v) === i);
 
     const productToSave: Product = {
@@ -747,19 +857,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       nameKm: productForm.nameKm || '',
       nameZh: productForm.nameZh || productForm.name,
       brand: productForm.brand || 'Lumimei Cambodia',
-      category: productForm.category || 'best-seller',
+      category: productForm.category || 'none',
       priceUsd: Number(productForm.priceUsd) || 0,
       priceKhr: Number(productForm.priceKhr) || Math.round((Number(productForm.priceUsd) || 0) * KHR_RATE),
       originalPriceUsd: productForm.originalPriceUsd ? Number(productForm.originalPriceUsd) : undefined,
+      discountCode: productForm.discountCode ? productForm.discountCode.trim().toUpperCase() : undefined,
+      discountPercent: productForm.discountPercent ? Number(productForm.discountPercent) : undefined,
       pointsCost: productForm.pointsCost ? Number(productForm.pointsCost) : undefined,
       rating: productForm.rating || 5,
       reviewCount: productForm.reviewCount || 0,
       image: mainImage,
+      imageKm: kmImagesList[0] || mainImage,
+      imageEn: enImagesList[0] || undefined,
+      imageZh: zhImagesList[0] || undefined,
       gallery: galleryImages,
+      galleryKm: kmImagesList.length > 0 ? kmImagesList : galleryImages,
+      galleryEn: enImagesList.length > 0 ? enImagesList : undefined,
+      galleryZh: zhImagesList.length > 0 ? zhImagesList : undefined,
+      promoText:
+        productForm.promoText &&
+        (productForm.promoText.title?.trim() ||
+          productForm.promoText.content?.trim() ||
+          (productForm.promoText.bulletItems && productForm.promoText.bulletItems.length > 0))
+          ? productForm.promoText
+          : undefined,
       descriptionCards: cards,
       isNew: !!productForm.isNew,
       isBestSeller: !!productForm.isBestSeller,
       isFreeShipping: !!productForm.isFreeShipping,
+      isPromotion: !!productForm.isPromotion,
       skinTypes: ['all'],
       skinConcerns: ['all'],
       description: cards.map((c) => c.caption).filter(Boolean).join(' • ') || productForm.name || '',
@@ -781,7 +907,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setEditingProductId(null);
     setProductForm({
       ...INITIAL_FORM_STATE,
-      descriptionCards: ensureTenCards([]),
+      promoText: undefined,
+      descriptionCards: [{ id: 'card_1', image: '', caption: '' }],
     });
 
     setProductSavedFeedback(
@@ -1065,6 +1192,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     );
   }
 
+  // Calculate products with promo codes count
+  const productsWithPromoCount = productsList.filter(
+    (p) => Boolean(p.discountCode && p.discountCode.trim().length > 0)
+  ).length;
+
   // ==========================================
   // LOGGED-IN ADMIN VIEW
   // ==========================================
@@ -1281,46 +1413,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {/* ==================================================== */}
         {activeAdminTab === 'home' && (
           <div className="space-y-6 animate-in fade-in">
-            {/* Header Greeting */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-2xs font-battambang">
-              <div>
-                <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 font-opensans flex items-center gap-2">
-                  <LayoutDashboard className="w-5 h-5 text-emerald-700" />
-                  <span>ទំព័រដើម Lumimei Admin</span>
-                </h1>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  ផ្ទាំងគ្រប់គ្រងចម្បង៖ បញ្ចូលផលិតផល អតិថិជន ការកុម្ម៉ង់ ការផ្ទៀងផ្ទាត់ Game និងចំណូលចំណាយ
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>Cloud Sync</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={onNavigateHome}
-                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>មើលទំព័រមុខ</span>
-                </button>
-              </div>
-            </div>
-
-            {/* 5 CARDS: Exactly 2 cards per row on mobile! */}
+            {/* DASHBOARD CARDS: 2 per row on mobile, 3 on tablet, 6 on desktop */}
             <div>
               <div className="flex items-center justify-between mb-3 px-1">
                 <h2 className="text-xs sm:text-sm font-bold text-slate-700 uppercase tracking-wider font-opensans flex items-center gap-1.5">
-                  <span>ម៉ឺនុយទាំង ៥ (5 Cards)</span>
+                  <span>ម៉ឺនុយផ្ទាំងគ្រប់គ្រង (Dashboard Cards)</span>
                 </h2>
                 <span className="text-[11px] text-slate-400 font-battambang hidden sm:inline">
                   ទម្រង់ទូរស័ព្ទដៃបង្ហាញជួរមាន ២ Card
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 font-battambang">
+              <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 font-battambang">
                 {/* CARD 1: បញ្ចូលផលិតផល */}
                 <button
                   type="button"
@@ -1437,18 +1541,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                   <div>
                     <h3 className="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-purple-700 transition">
-                      Verify
+                      Quiz & Verify
                     </h3>
                     <p className="text-xs font-bold text-slate-500 mt-0.5 font-mono">
-                      {pendingVerifyCount > 0 ? (
-                        <span className="text-amber-700 font-extrabold">{pendingVerifyCount} រង់ចាំ Verify</span>
-                      ) : (
-                        <span>{verifiedQuizCount} ផ្ទៀងផ្ទាត់រួច</span>
-                      )}
+                      <span>{pendingVerifyCount} អតិថិជន ({verifiedQuizCount} សំនួរ)</span>
                     </p>
                   </div>
                   <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-purple-700">
-                    <span>ផ្ទៀងផ្ទាត់ Game</span>
+                    <span>ពិនិត្យចម្លើយសំនួរ</span>
                     <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </button>
@@ -1457,7 +1557,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsFinancialModalOpen(true)}
-                  className="bg-white hover:bg-amber-50/50 border border-slate-200 hover:border-amber-300 rounded-2xl p-4 sm:p-5 flex flex-col justify-between text-left transition-all duration-200 shadow-2xs hover:shadow-md hover:-translate-y-0.5 cursor-pointer group min-h-[145px] col-span-2 sm:col-span-1"
+                  className="bg-white hover:bg-amber-50/50 border border-slate-200 hover:border-amber-300 rounded-2xl p-4 sm:p-5 flex flex-col justify-between text-left transition-all duration-200 shadow-2xs hover:shadow-md hover:-translate-y-0.5 cursor-pointer group min-h-[145px]"
                 >
                   <div className="flex items-center justify-between w-full mb-2.5">
                     <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-900 flex items-center justify-center group-hover:scale-110 transition-transform shadow-2xs">
@@ -1480,6 +1580,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </button>
+
+                {/* CARD 6: Code Promotion */}
+                <button
+                  type="button"
+                  id="admin-card-code-promotion"
+                  onClick={() => setIsPromoModalOpen(true)}
+                  className="bg-white hover:bg-rose-50/50 border border-slate-200 hover:border-rose-300 rounded-2xl p-4 sm:p-5 flex flex-col justify-between text-left transition-all duration-200 shadow-2xs hover:shadow-md hover:-translate-y-0.5 cursor-pointer group min-h-[145px]"
+                >
+                  <div className="flex items-center justify-between w-full mb-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-800 flex items-center justify-center group-hover:scale-110 transition-transform shadow-2xs">
+                      <Tag className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 font-mono">
+                      Promo
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-rose-700 transition">
+                      Code Promotion
+                    </h3>
+                    <p className="text-xs font-bold text-slate-500 mt-0.5 font-mono">
+                      {productsWithPromoCount + 3} កូដសកម្ម
+                    </p>
+                  </div>
+                  <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-rose-700">
+                    <span>កូដ & បញ្ចុះតម្លៃ</span>
+                    <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                  </div>
+                </button>
               </div>
             </div>
 
@@ -1492,10 +1621,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                   <div>
                     <h4 className="text-sm font-extrabold text-slate-900">
-                      មាន {pendingVerifyCount} ចម្លើយ Game ឆ្លើយសំនួរ កំពុងរង់ចាំ Admin ផ្ទៀងផ្ទាត់ (Verify)!
+                      មាន {pendingVerifyCount} អតិថិជនបានឆ្លើយសំនួរ ({verifiedQuizCount} សំនួរ) ក្នុងប្រព័ន្ធ!
                     </h4>
                     <p className="text-xs text-slate-600 mt-0.5">
-                      អតិថិជនបាន Submit ចម្លើយរួចរាល់ហើយ សូមពិនិត្យផ្ទៀងផ្ទាត់ដើម្បីផ្ដល់ពិន្ទុជូនពួកគាត់។
+                      រាល់ចម្លើយទាំងអស់របស់លេខទូរស័ព្ទនីមួយៗត្រូវបានច្របាច់បញ្ចូលគ្នាក្នុងកាតតែមួយ ដើម្បីងាយស្រួលពិនិត្យ។
                     </p>
                   </div>
                 </div>
@@ -1512,7 +1641,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
 
             {/* Quick Shortcuts */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 font-battambang">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 font-battambang">
               <button
                 type="button"
                 onClick={() => {
@@ -1555,6 +1684,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div>
                   <h4 className="text-xs sm:text-sm font-bold text-slate-900">គ្រប់គ្រងចំណូល/ចំណាយ</h4>
                   <p className="text-[11px] text-slate-500">កត់ត្រាចំណាយ និងពិនិត្យប្រាក់ចំណេញ</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsPromoModalOpen(true)}
+                className="bg-white border border-slate-200 hover:border-rose-400 p-4 rounded-2xl flex items-center gap-3 text-left transition hover:shadow-xs cursor-pointer"
+              >
+                <div className="w-9 h-9 rounded-xl bg-rose-50 text-rose-700 flex items-center justify-center shrink-0">
+                  <Tag className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-slate-900">Code Promotion</h4>
+                  <p className="text-[11px] text-slate-500">គ្រប់គ្រងកូដបញ្ចុះតម្លៃ និងប្រូម៉ូសិន</p>
                 </div>
               </button>
             </div>
@@ -1708,13 +1851,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       {/* Category Selection */}
                       <div>
                         <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                          ប្រភេទផលិតផល / ប្រូម៉ូសិន (Category & Promotion) <span className="text-rose-500">*</span>
+                          ប្រភេទផលិតផល / ប្រូម៉ូសិន (Category & Promotion)
                         </label>
                         <select
-                          value={productForm.category || 'best-seller'}
+                          value={productForm.category || 'none'}
                           onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
                         >
+                          <option value="none">None</option>
                           {CATEGORIES.filter((c) => c.id !== 'all').map((cat) => (
                             <option key={cat.id} value={cat.id}>
                               {cat.nameKm} ({cat.name})
@@ -1760,10 +1904,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <span>២. តម្លៃ និងស្តុកទំនិញ (Pricing & Inventory)</span>
                     </h3>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       {/* Price USD */}
                       <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-noto-sans-khmer">
                           តម្លៃ USD ($) <span className="text-rose-500">*</span>
                         </label>
                         <div className="relative">
@@ -1785,7 +1929,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                       {/* Price KHR */}
                       <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-noto-sans-khmer">
                           តម្លៃ KHR (៛) <span className="text-slate-400 text-[10px]">(គណនាស្វ័យប្រវត្តិ)</span>
                         </label>
                         <div className="relative">
@@ -1802,30 +1946,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
                       </div>
 
-                      {/* Original Price USD */}
+                      {/* Discount Code - ដាក់នៅខាងក្រោម តម្លៃ USD ($) * */}
                       <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                          តម្លៃដើម USD (សម្រាប់បញ្ចុះតម្លៃ)
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-noto-sans-khmer">
+                          code បញ្ចុះតម្លៃ
                         </label>
                         <div className="relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs font-bold font-mono">
-                            $
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold font-mono">
+                            #
                           </span>
                           <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={productForm.originalPriceUsd ?? ''}
-                            onChange={(e) => setProductForm({ ...productForm, originalPriceUsd: parseFloat(e.target.value) || undefined })}
-                            placeholder="40.00"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2.5 text-xs sm:text-sm text-slate-900 font-mono focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
+                            type="text"
+                            value={productForm.discountCode || ''}
+                            onChange={(e) => setProductForm({ ...productForm, discountCode: e.target.value.toUpperCase() })}
+                            placeholder="ឧ. LUMI10"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2.5 text-xs sm:text-sm text-slate-900 font-mono uppercase focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
                           />
                         </div>
                       </div>
 
-                      {/* Stock Quantity */}
+                      {/* ចំនួនភាគរយ (%) */}
                       <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-noto-sans-khmer">
+                          ចំនួនភាគរយ (%)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value={productForm.discountPercent ?? ''}
+                            onChange={(e) => setProductForm({ ...productForm, discountPercent: parseFloat(e.target.value) || 0 })}
+                            placeholder="10"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-3.5 pr-8 py-2.5 text-xs sm:text-sm text-slate-900 font-mono focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
+                          />
+                          <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold font-mono">
+                            %
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Stock Quantity */}
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-noto-sans-khmer">
                           ចំនួនក្នុងស្តុក (Stock Qty)
                         </label>
                         <input
@@ -1839,36 +2003,181 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
 
                     {/* Live Promotion & Discount Status Card */}
-                    {productForm.originalPriceUsd && productForm.priceUsd && productForm.originalPriceUsd > productForm.priceUsd && (
-                      <div className="p-3 bg-gradient-to-r from-rose-50 to-amber-50 border border-rose-200 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs">
+                    {(productForm.discountCode || (productForm.originalPriceUsd && productForm.priceUsd && productForm.originalPriceUsd > productForm.priceUsd)) && (
+                      <div className="p-3 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs">
                         <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded-md bg-rose-600 text-white font-extrabold font-mono text-[11px] shadow-xs">
-                            -{Math.round(((productForm.originalPriceUsd - productForm.priceUsd) / productForm.originalPriceUsd) * 100)}% OFF
-                          </span>
-                          <span className="font-bold text-rose-900">
-                            {language === 'zh'
-                              ? `特惠促销状态生效：优惠 $${(productForm.originalPriceUsd - productForm.priceUsd).toFixed(2)}`
-                              : `ប្រូម៉ូសិនបញ្ចុះតម្លៃសកម្ម៖ អតិថិជនចំណេញបាន $${(productForm.originalPriceUsd - productForm.priceUsd).toFixed(2)}`}
+                          {productForm.discountCode ? (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-600 text-white font-extrabold font-mono text-[11px] shadow-xs">
+                              PROMO CODE: #{productForm.discountCode} {productForm.discountPercent ? `(-${productForm.discountPercent}%)` : ''}
+                            </span>
+                          ) : productForm.originalPriceUsd && productForm.priceUsd && (
+                            <span className="px-2 py-0.5 rounded-md bg-rose-600 text-white font-extrabold font-mono text-[11px] shadow-xs">
+                              -{Math.round(((productForm.originalPriceUsd - productForm.priceUsd) / productForm.originalPriceUsd) * 100)}% OFF
+                            </span>
+                          )}
+                          <span className="font-bold text-emerald-900 font-noto-sans-khmer">
+                            {language === 'km'
+                              ? productForm.discountCode
+                                ? `កូដបញ្ចុះតម្លៃ #${productForm.discountCode}${productForm.discountPercent ? ` (បញ្ចុះតម្លៃ ${productForm.discountPercent}%)` : ''} ត្រូវបានកំណត់រួចរាល់`
+                                : `ប្រូម៉ូសិនបញ្ចុះតម្លៃសកម្ម`
+                              : language === 'zh'
+                              ? `专属优惠码 #${productForm.discountCode}${productForm.discountPercent ? `（优惠 ${productForm.discountPercent}%）` : ''}已设定`
+                              : `Promo code active`}
                           </span>
                         </div>
-                        <span className="text-[11px] text-slate-500 font-mono">
-                          ${productForm.originalPriceUsd.toFixed(2)} → ${productForm.priceUsd.toFixed(2)}
-                        </span>
                       </div>
                     )}
                   </div>
 
-                  {/* SECTION 3: PRODUCT IMAGE (9 CARDS, 2 PER ROW ON MOBILE, REORDERABLE) */}
-                  <div className="space-y-4 pt-2 border-t border-slate-100">
-                    <div className="flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
-                          <ImageIcon className="w-3.5 h-3.5" />
-                          <span>៣. រូបភាពផលិតផលចម្បង (Main Product Images)</span>
-                        </h3>
-                        <span className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-mono font-bold">
-                          ៩ រូបភាព • ផ្លាស់ប្តូរទីតាំងមុខក្រោយបាន
+                  {/* SECTION 3: PRODUCT IMAGE (MAIN PRODUCT IMAGES BY LANGUAGE) */}
+                  <div className="space-y-3 pt-2 border-t border-slate-100">
+                    {/* 1. THREE LANGUAGE BUTTONS PLACED ABOVE "រូបភាពផលិតផលចម្បង" (ONE single row on mobile) */}
+                    <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 w-full">
+                      <button
+                        type="button"
+                        onClick={() => setMainImageLanguage('km')}
+                        className={`py-2 px-1 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1 sm:gap-1.5 transition cursor-pointer border ${
+                          mainImageLanguage === 'km'
+                            ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/20'
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span className="text-xs sm:text-sm shrink-0">🇰🇭</span>
+                        <span className="truncate">柬埔寨文</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+                            mainImageLanguage === 'km' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {productImagesByLang.km.filter(Boolean).length}
                         </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setMainImageLanguage('en')}
+                        className={`py-2 px-1 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1 sm:gap-1.5 transition cursor-pointer border ${
+                          mainImageLanguage === 'en'
+                            ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/20'
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span className="text-xs sm:text-sm shrink-0">🇬🇧</span>
+                        <span className="truncate">英文</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+                            mainImageLanguage === 'en' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {productImagesByLang.en.filter(Boolean).length}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setMainImageLanguage('zh')}
+                        className={`py-2 px-1 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1 sm:gap-1.5 transition cursor-pointer border ${
+                          mainImageLanguage === 'zh'
+                            ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/20'
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span className="text-xs sm:text-sm shrink-0">🇨🇳</span>
+                        <span className="truncate">中文</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+                            mainImageLanguage === 'zh' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {productImagesByLang.zh.filter(Boolean).length}
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* 2. SECTION HEADER: រូបភាពផលិតផលចម្បង (placed BELOW the 3 language buttons) */}
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <h3 className="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5" />
+                        <span>រូបភាពផលិតផលចម្បង</span>
+                        <span className="text-[10px] sm:text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full ml-1">
+                          {mainImageLanguage === 'km' && '🇰🇭 ភាសាខ្មែរ (Khmer)'}
+                          {mainImageLanguage === 'en' && '🇬🇧 English (英文)'}
+                          {mainImageLanguage === 'zh' && '🇨🇳 中文 (Chinese)'}
+                        </span>
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] sm:text-[11px] text-slate-500 font-mono font-medium">
+                          {(productImagesByLang[mainImageLanguage] || []).filter(Boolean).length}/{(productImagesByLang[mainImageLanguage] || []).length} រូបភាព
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleAddMainImageSlot}
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>បន្ថែមរូបភាព (Add Image)</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Language-Specific Upload Dropzone & Button */}
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsDragOver(true);
+                      }}
+                      onDragLeave={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsDragOver(false);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsDragOver(false);
+                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                          handleGeneralFileUpload(e.dataTransfer.files);
+                        }
+                      }}
+                      onClick={() => generalFileInputRef.current?.click()}
+                      className={`border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2 ${
+                        isDragOver
+                          ? 'border-emerald-500 bg-emerald-50/70 scale-[0.99]'
+                          : 'border-emerald-200 bg-emerald-50/30 hover:bg-emerald-50/60 hover:border-emerald-400'
+                      }`}
+                    >
+                      <input
+                        type="file"
+                        ref={generalFileInputRef}
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files.length > 0) {
+                            handleGeneralFileUpload(e.target.files);
+                            e.target.value = '';
+                          }
+                        }}
+                      />
+                      <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 shadow-xs">
+                        {isUploadingImage ? (
+                          <Loader2 className="w-5 h-5 animate-spin text-emerald-700" />
+                        ) : (
+                          <Upload className="w-5 h-5" />
+                        )}
+                      </div>
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-bold text-slate-800">
+                          {mainImageLanguage === 'km' && 'ចុច ឬទម្លាក់រូបភាពនៅទីនេះដើម្បីអាប់ឡូតរូបភាព (ភាសាខ្មែរ)'}
+                          {mainImageLanguage === 'en' && 'Click or drag files here to upload English images'}
+                          {mainImageLanguage === 'zh' && '点击或拖拽上传 中文 商品图片'}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {mainImageLanguage === 'km' && 'អាចជ្រើសរើសរូបភាពច្រើនក្នុងពេលតែមួយ (JPG, PNG, WEBP)'}
+                          {mainImageLanguage === 'en' && 'Supports multiple images to fill slots (JPG, PNG, WEBP)'}
+                          {mainImageLanguage === 'zh' && '支持批量选择多张图片自动填入对应卡槽 (JPG, PNG, WEBP)'}
+                        </p>
                       </div>
                     </div>
 
@@ -1879,15 +2188,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                     )}
 
+                    {/* Main Image Slots Grid for Selected Language */}
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-4">
-                      {getMainImages().map((imgUrl, idx) => {
+                      {productImagesByLang[mainImageLanguage].map((imgUrl, idx) => {
                         const isFirst = idx === 0;
-                        const isLast = idx === 8;
+                        const isLast = idx === productImagesByLang[mainImageLanguage].length - 1;
                         const hasImage = Boolean(imgUrl);
+                        const isSlotUploading = uploadingSlotIdx === idx;
 
                         return (
                           <div
-                            key={`main_img_${idx}`}
+                            key={`main_img_${mainImageLanguage}_${idx}`}
                             className={`bg-white border rounded-2xl p-2.5 sm:p-3 flex flex-col justify-between shadow-xs transition duration-200 ${
                               isFirst
                                 ? 'border-emerald-500/80 ring-2 ring-emerald-500/20 shadow-emerald-950/5'
@@ -1906,7 +2217,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 {isFirst ? '⭐ #1 Cover' : `#${idx + 1}`}
                               </span>
 
-                              {/* Move Left / Right / Clear Actions */}
+                              {/* Move Left / Right / Clear / Delete Actions */}
                               <div className="flex items-center gap-0.5">
                                 <button
                                   type="button"
@@ -1936,22 +2247,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
 
-                                {hasImage && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleClearMainImage(idx)}
-                                    className="text-slate-400 hover:text-rose-600 transition p-1 rounded-md hover:bg-rose-50 cursor-pointer"
-                                    title="លុបរូបភាព"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMainImage(idx)}
+                                  className="text-slate-400 hover:text-rose-600 transition p-1 rounded-md hover:bg-rose-50 cursor-pointer active:scale-90"
+                                  title="លុបរូបភាពនេះ (Delete Image)"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                             </div>
 
-                            {/* Live Preview Box */}
-                            <div className="relative aspect-square w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-50/80 flex items-center justify-center mb-2.5 group p-1.5">
-                              {hasImage ? (
+                            {/* Live Preview Box & Click-to-Upload */}
+                            <div
+                              onClick={() => slotFileInputRefs.current[idx]?.click()}
+                              className="relative aspect-square w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-50/80 flex items-center justify-center mb-2 group p-1.5 cursor-pointer hover:border-emerald-500 transition"
+                              title="ចុចដើម្បីអាប់ឡូតរូបភាព (Click to upload)"
+                            >
+                              <input
+                                type="file"
+                                ref={(el) => {
+                                  slotFileInputRefs.current[idx] = el;
+                                }}
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    handleSlotFileUpload(idx, file);
+                                    e.target.value = '';
+                                  }
+                                }}
+                              />
+
+                              {isSlotUploading ? (
+                                <div className="text-center p-2 flex flex-col items-center justify-center gap-1">
+                                  <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
+                                  <span className="text-[10px] font-bold text-emerald-700">Uploading...</span>
+                                </div>
+                              ) : hasImage ? (
                                 <>
                                   <img
                                     src={imgUrl}
@@ -1967,29 +2301,48 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     <Check className="w-2.5 h-2.5 text-emerald-400" />
                                     <span>Live</span>
                                   </div>
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white text-[10px] font-bold gap-1">
+                                    <Camera className="w-3.5 h-3.5" />
+                                    <span>
+                                      {mainImageLanguage === 'km' ? 'ប្តូររូប' : mainImageLanguage === 'zh' ? '更换图片' : 'Change'}
+                                    </span>
+                                  </div>
                                 </>
                               ) : (
-                                <div className="text-center p-2 text-slate-400 flex flex-col items-center justify-center">
-                                  <ImageIcon className="w-6 h-6 mb-1 opacity-40 text-slate-400" />
-                                  <span className="text-[10px] font-medium text-slate-500">
+                                <div className="text-center p-2 text-slate-400 flex flex-col items-center justify-center group-hover:text-emerald-700 transition">
+                                  <Camera className="w-6 h-6 mb-1 opacity-60 text-slate-400 group-hover:text-emerald-600 group-hover:scale-110 transition" />
+                                  <span className="text-[10px] font-bold text-slate-600 group-hover:text-emerald-800">
                                     {isFirst ? 'រូបភាព Cover' : `រូបភាព #${idx + 1}`}
                                   </span>
-                                  <span className="text-[8px] text-slate-400">បញ្ចូល Link ខាងក្រោម</span>
+                                  <span className="text-[9px] text-emerald-600 font-semibold mt-0.5 underline">
+                                    {mainImageLanguage === 'km' ? 'ជ្រើសរើសរូប' : mainImageLanguage === 'zh' ? '点击上传' : 'Choose file'}
+                                  </span>
                                 </div>
                               )}
                             </div>
 
-                            {/* Image URL Input */}
+                            {/* Image URL Input & Slot Upload trigger */}
                             <div className="space-y-1">
-                              <label className="block text-[10px] font-bold text-slate-700">
-                                {isFirst ? 'Link រូបភាពចម្បង (Cover)' : `Link រូបភាព #${idx + 1}`}
-                              </label>
+                              <div className="flex items-center justify-between text-[10px] font-bold text-slate-700">
+                                <span>{isFirst ? 'Link Cover' : `Link #${idx + 1}`}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    slotFileInputRefs.current[idx]?.click();
+                                  }}
+                                  className="text-emerald-700 hover:text-emerald-800 text-[10px] font-bold flex items-center gap-0.5 cursor-pointer"
+                                >
+                                  <Upload className="w-2.5 h-2.5" />
+                                  <span>{mainImageLanguage === 'km' ? 'អាប់ឡូត' : mainImageLanguage === 'zh' ? '上传' : 'Upload'}</span>
+                                </button>
+                              </div>
                               <div className="relative">
                                 <input
                                   type="url"
                                   value={imgUrl}
                                   onChange={(e) => updateMainImageSlot(idx, e.target.value)}
-                                  placeholder="https://... (Image URL)"
+                                  placeholder="https://... (URL)"
                                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-[11px] text-slate-900 placeholder-slate-400 font-mono focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
                                 />
                                 {hasImage && (
@@ -2002,6 +2355,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </div>
                         );
                       })}
+
+                      {/* Add Main Image Slot Button Card */}
+                      <button
+                        type="button"
+                        onClick={handleAddMainImageSlot}
+                        className="border-2 border-dashed border-slate-200 hover:border-emerald-500 bg-slate-50/50 hover:bg-emerald-50/40 rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition min-h-[160px] text-slate-400 hover:text-emerald-700 group focus:outline-hidden"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-white group-hover:bg-emerald-100 flex items-center justify-center border border-slate-200 group-hover:border-emerald-300 transition shadow-xs">
+                          <Plus className="w-5 h-5 text-slate-500 group-hover:text-emerald-700" />
+                        </div>
+                        <span className="text-xs font-bold text-slate-600 group-hover:text-emerald-800">
+                          + បន្ថែមរូបភាព (Add Image)
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          ចុចដើម្បីបន្ថែមរូបភាពថ្មី
+                        </span>
+                      </button>
                     </div>
                   </div>
 
@@ -2014,6 +2384,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                     {/* Badges Checkboxes */}
                     <div className="flex flex-wrap gap-4 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
+                      {/* Promotion ពិសេស (Special Promotion) */}
+                      <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-rose-700 bg-rose-50 px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-100/70 transition">
+                        <input
+                          type="checkbox"
+                          checked={!!productForm.isPromotion}
+                          onChange={(e) => setProductForm({ ...productForm, isPromotion: e.target.checked })}
+                          className="rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                        />
+                        <span>🎁 Promotion ពិសេស</span>
+                      </label>
+
                       <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700">
                         <input
                           type="checkbox"
@@ -2034,6 +2415,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <span>✨ ផលិតផលថ្មី (New Arrival)</span>
                       </label>
 
+                      {/* Free Shipping (Separated from Promotion) */}
                       <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700">
                         <input
                           type="checkbox"
@@ -2046,7 +2428,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* SECTION 5: PRODUCT DESCRIPTION CARDS (10 CARDS) */}
+                  {/* PROMOTIONAL COPY / 推广文 (ABOVE PRODUCT DESCRIPTION CARDS) */}
+                  <ProductPromoEditor
+                    value={productForm.promoText}
+                    onChange={(next) => setProductForm({ ...productForm, promoText: next })}
+                  />
+
+                  {/* SECTION 5: PRODUCT DESCRIPTION CARDS */}
                   <div className="space-y-4 pt-2 border-t border-slate-100">
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <div className="flex items-center gap-2">
@@ -2055,16 +2443,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <span>ការពិពណ៌នាផលិតផល (Product Description Cards)</span>
                         </h3>
                         <span className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-mono font-bold">
-                          10 Cards • ផ្លាស់ប្តូរទីតាំងមុខក្រោយបាន
+                          {(productForm.descriptionCards || []).length} Cards • អាចបន្ថែម/លុប និងផ្លាស់ប្តូរទីតាំងបាន
                         </span>
                       </div>
+                      <button
+                        type="button"
+                        onClick={handleAddDescriptionCard}
+                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>បន្ថែមផ្ទាំងពិពណ៌នា (Add Card)</span>
+                      </button>
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-4">
-                      {ensureTenCards(productForm.descriptionCards).map((card, idx) => {
+                      {(productForm.descriptionCards || []).map((card, idx) => {
                         const isFirst = idx === 0;
-                        const isLast = idx === 9;
+                        const isLast = idx === (productForm.descriptionCards || []).length - 1;
                         const hasImage = Boolean(card.image);
+                        const isCardUploading = uploadingCardIdx === idx;
 
                         return (
                           <div
@@ -2077,7 +2474,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 #{idx + 1}
                               </span>
 
-                              {/* Move Left / Right / Clear Actions */}
+                              {/* Move Left / Right / Clear / Delete Actions */}
                               <div className="flex items-center gap-0.5">
                                 <button
                                   type="button"
@@ -2107,22 +2504,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
 
-                                {hasImage && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleClearCardPhoto(idx)}
-                                    className="text-slate-400 hover:text-rose-600 transition p-1 rounded-md hover:bg-rose-50 cursor-pointer"
-                                    title="លុបរូបភាព"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteDescriptionCard(idx)}
+                                  className="text-slate-400 hover:text-rose-600 transition p-1 rounded-md hover:bg-rose-50 cursor-pointer active:scale-90"
+                                  title="លុបផ្ទាំងនេះ (Delete Card)"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                             </div>
 
-                            {/* Live Preview Box */}
-                            <div className="relative aspect-square w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-50/80 flex items-center justify-center mb-2.5 group p-1.5">
-                              {hasImage ? (
+                            {/* Live Preview Box & Click-to-Upload */}
+                            <div
+                              onClick={() => cardFileInputRefs.current[idx]?.click()}
+                              className="relative aspect-square w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-50/80 flex items-center justify-center mb-2 group p-1.5 cursor-pointer hover:border-emerald-500 transition"
+                              title="ចុចដើម្បីអាប់ឡូតរូបភាព (Click to upload)"
+                            >
+                              <input
+                                type="file"
+                                ref={(el) => {
+                                  cardFileInputRefs.current[idx] = el;
+                                }}
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    handleCardPhotoUpload(idx, file);
+                                    e.target.value = '';
+                                  }
+                                }}
+                              />
+
+                              {isCardUploading ? (
+                                <div className="text-center p-2 flex flex-col items-center justify-center gap-1">
+                                  <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
+                                  <span className="text-[10px] font-bold text-emerald-700">Uploading...</span>
+                                </div>
+                              ) : hasImage ? (
                                 <>
                                   <img
                                     src={card.image}
@@ -2138,39 +2558,71 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     <Check className="w-2.5 h-2.5 text-emerald-400" />
                                     <span>Live</span>
                                   </div>
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white text-[10px] font-bold gap-1">
+                                    <Camera className="w-3.5 h-3.5" />
+                                    <span>ប្តូររូប</span>
+                                  </div>
                                 </>
                               ) : (
-                                <div className="text-center p-2 text-slate-400 flex flex-col items-center justify-center">
-                                  <ImageIcon className="w-6 h-6 mb-1 opacity-40 text-slate-400" />
-                                  <span className="text-[10px] font-medium text-slate-500">រូបភាព #{idx + 1}</span>
-                                  <span className="text-[8px] text-slate-400">បញ្ចូល Link ខាងក្រោម</span>
+                                <div className="text-center p-2 text-slate-400 flex flex-col items-center justify-center group-hover:text-emerald-700 transition">
+                                  <ImageIcon className="w-6 h-6 mb-1 opacity-40 text-slate-400 group-hover:text-emerald-600 group-hover:scale-110 transition" />
+                                  <span className="text-[10px] font-medium text-slate-500 group-hover:text-emerald-800">
+                                    រូបភាព #{idx + 1}
+                                  </span>
+                                  <span className="text-[8px] text-emerald-600 font-semibold underline">
+                                    ចុចអាប់ឡូត ឬដាក់ Link
+                                  </span>
                                 </div>
                               )}
                             </div>
 
-                            {/* Image URL Input */}
-                            <div className="space-y-1">
-                              <label className="block text-[10px] font-bold text-slate-700">
-                                Link រូបភាព #{idx + 1}
-                              </label>
+                            {/* Image URL Input & Caption */}
+                            <div className="space-y-1.5">
                               <div className="relative">
                                 <input
                                   type="url"
                                   value={card.image || ''}
                                   onChange={(e) => updateCardField(idx, 'image', e.target.value)}
                                   placeholder="https://... (Image URL)"
-                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-[11px] text-slate-900 placeholder-slate-400 font-mono focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-1 text-[10px] text-slate-900 placeholder-slate-400 font-mono focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
                                 />
                                 {hasImage && (
-                                  <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2">
+                                    <Check className="w-3 h-3 text-emerald-600" />
                                   </div>
                                 )}
+                              </div>
+
+                              <div>
+                                <input
+                                  type="text"
+                                  value={card.caption || ''}
+                                  onChange={(e) => updateCardField(idx, 'caption', e.target.value)}
+                                  placeholder="ចំណងជើងពិពណ៌នា (Caption)..."
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-1 text-[11px] text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-emerald-600 focus:bg-white transition"
+                                />
                               </div>
                             </div>
                           </div>
                         );
                       })}
+
+                      {/* Add Card Button Card */}
+                      <button
+                        type="button"
+                        onClick={handleAddDescriptionCard}
+                        className="border-2 border-dashed border-slate-200 hover:border-emerald-500 bg-slate-50/50 hover:bg-emerald-50/40 rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition min-h-[160px] text-slate-400 hover:text-emerald-700 group focus:outline-hidden"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-white group-hover:bg-emerald-100 flex items-center justify-center border border-slate-200 group-hover:border-emerald-300 transition shadow-xs">
+                          <Plus className="w-5 h-5 text-slate-500 group-hover:text-emerald-700" />
+                        </div>
+                        <span className="text-xs font-bold text-slate-600 group-hover:text-emerald-800">
+                          + បន្ថែមផ្ទាំងពិពណ៌នា (Add Card)
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          ចុចដើម្បីបន្ថែម Card ថ្មី
+                        </span>
+                      </button>
                     </div>
                   </div>
 
@@ -2382,8 +2834,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {/* Info */}
                           <div className="flex-1 min-w-0 space-y-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md font-bold">
-                                {categoryObj?.nameKm || prod.category}
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-md font-bold ${
+                                  prod.category && prod.category !== 'none'
+                                    ? 'bg-emerald-50 text-emerald-800'
+                                    : 'bg-slate-100 text-slate-500 font-normal'
+                                }`}
+                              >
+                                {categoryObj?.nameKm || (prod.category === 'none' || !prod.category ? 'None' : prod.category)}
                               </span>
                               {prod.originalPriceUsd && prod.originalPriceUsd > prod.priceUsd && (
                                 <span className="text-[10px] bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded-md font-bold font-mono">
@@ -2535,6 +2993,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           onClose={() => setIsFinancialModalOpen(false)}
           language={language}
           totalRevenueUsd={totalRevenueUsd}
+        />
+
+        {/* PROMO CODE MANAGEMENT MODAL (Code Promotion) */}
+        <PromoCodeManagementModal
+          isOpen={isPromoModalOpen}
+          onClose={() => setIsPromoModalOpen(false)}
+          language={language}
+          products={productsList}
+          onNavigateToProductEdit={(productId) => {
+            const prod = productsList.find((p) => p.id === productId);
+            if (prod) {
+              setActiveAdminTab('products');
+              handleStartEditProduct(prod);
+            }
+          }}
+          onNavigateToAddProduct={() => {
+            setActiveAdminTab('products');
+            handleStartAddProduct();
+          }}
         />
       </main>
     </div>

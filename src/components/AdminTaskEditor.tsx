@@ -37,6 +37,19 @@ export interface DynamicMissionTask {
 
 const DEFAULT_TASKS: DynamicMissionTask[] = [
   {
+    id: 'task-new-customer',
+    titleKm: 'អតិថិជនថ្មី',
+    titleEn: 'New Customer',
+    titleZh: '新客户',
+    points: 15,
+    rewardTextKm: '15ពិន្ទុ',
+    rewardTextEn: '15 points',
+    rewardTextZh: '15 积分',
+    iconType: 'user',
+    requiresPhoto: false,
+    active: true,
+  },
+  {
     id: 'task-quiz-game',
     titleKm: 'លេង Game ឆ្លើយសំនួរ',
     titleEn: 'Play Quiz Game',
@@ -103,10 +116,27 @@ export function getStoredMissionTasks(): DynamicMissionTask[] {
           return true;
         });
 
-        // Ensure quiz game and refer friend exist
+        // Ensure new customer, quiz game and refer friend exist
+        let hasNewCustomer = false;
         let hasQuiz = false;
         let hasRefer = false;
         const migrated = filtered.map((t: DynamicMissionTask) => {
+          if (t.id === 'task-new-customer' || t.titleKm === 'អតិថិជនថ្មី' || t.titleKm?.includes('អតិថិជនថ្មី')) {
+            hasNewCustomer = true;
+            return {
+              id: 'task-new-customer',
+              titleKm: 'អតិថិជនថ្មី',
+              titleEn: 'New Customer',
+              titleZh: '新客户',
+              points: 15,
+              rewardTextKm: '15ពិន្ទុ',
+              rewardTextEn: '15 points',
+              rewardTextZh: '15 积分',
+              iconType: 'user' as const,
+              requiresPhoto: false,
+              active: true,
+            };
+          }
           if (t.id === 'task-quiz-game' || t.titleKm?.includes('ឆ្លើយសំនួរ')) {
             hasQuiz = true;
             return {
@@ -114,10 +144,10 @@ export function getStoredMissionTasks(): DynamicMissionTask[] {
               titleKm: 'លេង Game ឆ្លើយសំនួរ',
               titleEn: 'Play Quiz Game',
               titleZh: '玩问答游戏',
-              points: 6,
-              rewardTextKm: '+6 ពិន្ទុ (១ពិន្ទុ/១សំនួរ)',
-              rewardTextEn: '+6 pts (1 pt/question)',
-              rewardTextZh: '+6 积分 (每题1分)',
+              points: 60,
+              rewardTextKm: '+60 ពិន្ទុ (១០ពិន្ទុ/១សំនួរ)',
+              rewardTextEn: '+60 pts (10 pts/question)',
+              rewardTextZh: '+60 积分 (每题10分)',
               iconType: 'gamepad' as const,
               requiresPhoto: false,
               active: true,
@@ -142,16 +172,34 @@ export function getStoredMissionTasks(): DynamicMissionTask[] {
           return t;
         });
 
+        if (!hasNewCustomer) {
+          migrated.unshift({
+            id: 'task-new-customer',
+            titleKm: 'អតិថិជនថ្មី',
+            titleEn: 'New Customer',
+            titleZh: '新客户',
+            points: 15,
+            rewardTextKm: '15ពិន្ទុ',
+            rewardTextEn: '15 points',
+            rewardTextZh: '15 积分',
+            iconType: 'user' as const,
+            requiresPhoto: false,
+            active: true,
+          });
+          hasChanges = true;
+        }
+
         if (!hasQuiz) {
-          migrated.splice(1, 0, {
+          const quizIndex = migrated.findIndex((t) => t.id === 'task-new-customer') + 1 || 1;
+          migrated.splice(quizIndex, 0, {
             id: 'task-quiz-game',
             titleKm: 'លេង Game ឆ្លើយសំនួរ',
             titleEn: 'Play Quiz Game',
             titleZh: '玩问答游戏',
-            points: 6,
-            rewardTextKm: '+6 ពិន្ទុ (១ពិន្ទុ/១សំនួរ)',
-            rewardTextEn: '+6 pts (1 pt/question)',
-            rewardTextZh: '+6 积分 (每题1分)',
+            points: 60,
+            rewardTextKm: '+60 ពិន្ទុ (១០ពិន្ទុ/១សំនួរ)',
+            rewardTextEn: '+60 pts (10 pts/question)',
+            rewardTextZh: '+60 积分 (每题10分)',
             iconType: 'gamepad' as const,
             requiresPhoto: false,
             active: true,

@@ -3,6 +3,7 @@ import { ConfirmationResult } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { maskPhoneNumber, db } from '../../lib/firebase';
 import { useAuth } from '../../context/AuthContext';
+import { runWithLoading } from '../../utils/asyncUtils';
 import { KeyRound, Edit2, RotateCw, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
 interface VerifyPhoneProps {
@@ -29,6 +30,13 @@ export const VerifyPhone: React.FC<VerifyPhoneProps> = ({
   const [countdown, setCountdown] = useState(60);
   const [activeConfirmation, setActiveConfirmation] = useState<ConfirmationResult>(confirmationResult);
 
+  // Sync active confirmation when prop changes (e.g. from parent re-send)
+  useEffect(() => {
+    if (confirmationResult) {
+      setActiveConfirmation(confirmationResult);
+    }
+  }, [confirmationResult]);
+
   // Countdown timer for Resend OTP
   useEffect(() => {
     if (countdown <= 0) return;
@@ -51,112 +59,126 @@ export const VerifyPhone: React.FC<VerifyPhoneProps> = ({
       return;
     }
 
-    setLoading(true);
+    if (!activeConfirmation || typeof activeConfirmation.confirm !== 'function') {
+      setErrorMessage('លេខកូដសុពលភាពបានផុតកំណត់ សូមផ្ញើលេខកូដម្តងទៀត / 验证会话已过期，请重新获取验证码');
+      return;
+    }
+
     setErrorMessage('');
     setSuccessMessage('');
 
-    try {
-      const res = await verifyOTP(activeConfirmation, otpCode);
-      
-      const rawUserPhone = res.user.phoneNumber || phoneE164;
-      const cleanPhone = rawUserPhone.replace(/[^0-9]/g, '');
+    await runWithLoading(
+      async () => {
+        // 1. 验证 OTP 验证码 (Firebase Auth)
+        const res = await verifyOTP(activeConfirmation, otpCode);
 
-      // Retrieve any pending user data filled in Step 1
-      const pendingDataStr = localStorage.getItem('lumimei_pending_registration') || localStorage.getItem('latest_user');
-      let pendingData: any = {};
-      if (pendingDataStr) {
-        try {
-          pendingData = JSON.parse(pendingDataStr);
-        } catch {
-          // ignore
+        const rawUserPhone = res.user.phoneNumber || phoneE164;
+
+        // Retrieve any pending user data filled in Step 1
+        const pendingDataStr = localStorage.getItem('lumimei_pending_registration') || localStorage.getItem('latest_user');
+        let pendingData: any = {};
+        if (pendingDataStr) {
+          try {
+            pendingData = JSON.parse(pendingDataStr);
+          } catch {
+            // ignore
+          }
         }
-      }
 
-      // Always write/sync to Firestore users collection by clean phone doc ID
-      try {
+        // 2. 异步后台写入 Firestore（如果已有该手机号用户资料，复用其主 UID）
+        const targetDocUid = (res as any).profile?.uid || res.user.uid;
         const firestoreUserData = {
-          uid: res.user.uid,
+          uid: targetDocUid,
           phoneNumber: rawUserPhone,
           fullName: pendingData.fullName || pendingData.displayName || pendingData.name || 'អ្នកប្រើប្រាស់',
           gender: pendingData.gender || '',
           age: pendingData.ageRange || pendingData.age || '',
+          location: pendingData.location || '',
           telegram: pendingData.telegram || '',
           skinConcerns: pendingData.skinConcerns || [],
-          createdAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
         };
-        await setDoc(doc(db, "users", cleanPhone), firestoreUserData, { merge: true });
-        console.log("【VerifyPhone】Firestore 写入成功 (Doc ID: " + cleanPhone + "):", firestoreUserData);
-      } catch (fsErr: any) {
-        console.warn("VerifyPhone Firestore write notice:", fsErr);
-      }
 
-      // 1. If user already has an account in Firestore, log them in IMMEDIATELY!
-      if (!res.isNewUser) {
-        localStorage.removeItem('lumimei_pending_registration');
-        onVerified(false);
-        return;
-      }
+        // 写入 Firestore 文档 users/{targetDocUid} (非阻塞后台执行)
+        setDoc(doc(db, 'users', targetDocUid), firestoreUserData, { merge: true })
+          .then(() => console.log('【VerifyPhone】Firestore 写入成功 (UID: ' + targetDocUid + ')'))
+          .catch((fsErr: any) => console.warn('【VerifyPhone】Firestore UID 写入提示:', fsErr?.message || fsErr));
 
-      // 2. If user is NEW:
-      // Check if registration details were provided beforehand in Step 1
-      if (pendingDataStr) {
-        try {
-          const cleanName = (pendingData.fullName || pendingData.displayName || '').trim() || 'អ្នកប្រើប្រាស់';
-          
-          // Clear any previously saved photo, orders, points, or tier status in browser storage
-          localStorage.removeItem('lumimei_user_photo_url');
-          localStorage.removeItem('lumimei_user_orders');
-          localStorage.removeItem('lumimei_is_fb_top_friend');
-          localStorage.removeItem('lumimei_completed_mission_tasks');
-          localStorage.removeItem('lumimei_guest_points');
-
-          await createUserProfile({
-            displayName: cleanName,
-            fullName: cleanName,
-            telegram: pendingData.telegram || '',
-            gender: pendingData.gender || '',
-            ageRange: pendingData.ageRange || '',
-            skinConcerns: pendingData.skinConcerns || [],
-            acneDetails: pendingData.acneDetails || '',
-            password: pendingData.password,
-            preferredLanguage: 'km',
-          });
-          localStorage.removeItem('lumimei_pending_registration');
-          
-          // Enter account immediately
-          onVerified(false);
-          return;
-        } catch {
-          // ignore and fallback to complete profile
+        // 3. 如果在步骤1中填写过注册信息，后台静默补充完善资料
+        if (pendingDataStr && (pendingData.fullName || pendingData.displayName)) {
+          try {
+            const cleanName = (pendingData.fullName || pendingData.displayName || '').trim() || 'អ្នកប្រើប្រាស់';
+            createUserProfile({
+              displayName: cleanName,
+              fullName: cleanName,
+              telegram: pendingData.telegram || '',
+              gender: pendingData.gender || '',
+              ageRange: pendingData.ageRange || '',
+              location: pendingData.location || '',
+              skinConcerns: pendingData.skinConcerns || [],
+              acneDetails: pendingData.acneDetails || '',
+              password: pendingData.password,
+              preferredLanguage: 'km',
+            }).catch((err) => console.warn('【VerifyPhone】后台用户资料同步提示:', err?.message || err));
+          } catch (err) {
+            console.warn('【VerifyPhone】资料解析提示:', err);
+          }
         }
-      }
 
-      // If user is new and has not filled profile details yet, show "បង្កើតគណនីរបស់អ្នក"
-      onVerified(true);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'លេខកូដមិនត្រឹមត្រូវទេ។');
-      setLoading(false);
-    }
+        localStorage.removeItem('lumimei_pending_registration');
+
+        // 4. 登录成功立刻跳转！
+        onVerified(false);
+      },
+      setLoading,
+      {
+        timeoutMs: 18000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.error('【VerifyPhone】验证码校验失败:', err);
+          const msg =
+            err?.friendlyKm ||
+            err?.friendlyZh ||
+            err?.message ||
+            'លេខកូដមិនត្រឹមត្រូវទេ។ សូមព្យាយាមម្ដងទៀត / 验证码不正确，请重试';
+          setErrorMessage(msg);
+        },
+      }
+    );
   };
 
   const handleResend = async () => {
     if (countdown > 0 || resendLoading) return;
 
-    setResendLoading(true);
     setErrorMessage('');
     setSuccessMessage('');
 
-    try {
-      const newConfirmation = await onResendOTP();
-      setActiveConfirmation(newConfirmation);
-      setCountdown(60);
-      setOtpCode('');
-      setSuccessMessage('លេខកូដ OTP ថ្មីត្រូវបានផ្ញើទៅកាន់លេខទូរស័ព្ទរបស់អ្នករួចរាល់ហើយ។');
-    } catch (err: any) {
-      setErrorMessage(err.message || 'មិនអាចផ្ញើលេខកូដបានទេ។ សូមព្យាយាមម្ដងទៀត។');
-    } finally {
-      setResendLoading(false);
-    }
+    await runWithLoading(
+      async () => {
+        try {
+          const newConfirmation = await onResendOTP();
+          if (newConfirmation && typeof newConfirmation.confirm === 'function') {
+            setActiveConfirmation(newConfirmation);
+            setCountdown(60);
+            setOtpCode('');
+            setSuccessMessage('លេខកូដ OTP ថ្មីត្រូវបានផ្ញើទៅកាន់លេខទូរស័ព្ទរបស់អ្នករួចរាល់ហើយ។');
+            return;
+          }
+        } catch (resendErr) {
+          console.warn('onResendOTP hint:', resendErr);
+        }
+        // Fallback: Return to PhoneLogin to complete fresh reCAPTCHA pass
+        onChangePhoneNumber();
+      },
+      setResendLoading,
+      {
+        timeoutMs: 15000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          setErrorMessage(err?.friendlyKm || err?.message || 'មិនអាចផ្ញើលេខកូដបានទេ។ សូមព្យាយាមម្ដងទៀត។');
+        },
+      }
+    );
   };
 
   return (

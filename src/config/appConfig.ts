@@ -1,11 +1,4 @@
-export const firebaseConfig = {
-  apiKey: "AIzaSyAGwPXfVGV7NQ7Q3T-PsURFuB-GIwWiyfk",
-  authDomain: "lumimei-production-168.firebaseapp.com",
-  projectId: "lumimei-production-168",
-  storageBucket: "lumimei-production-168.firebasestorage.app",
-  messagingSenderId: "89302057043",
-  appId: "1:89302057043:web:202baa7a94086d1bff46a6"
-};
+export { firebaseConfig } from '../lib/firebase';
 
 /**
  * Global Application Configuration & Switches

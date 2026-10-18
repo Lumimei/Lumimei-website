@@ -2,6 +2,10 @@ import { Product } from '../types';
 import { PRODUCTS, KHR_RATE } from '../data/products';
 import { db } from '../lib/firebase';
 import {
+  FIRESTORE_DB_ID,
+  FIREBASE_PROJECT_ID,
+} from '../lib/firebaseConfig';
+import {
   collection,
   doc,
   getDocs,
@@ -10,137 +14,17 @@ import {
   onSnapshot,
   query,
   orderBy,
+  deleteField,
 } from 'firebase/firestore';
 
 const STORAGE_KEY = 'lumimei_custom_products_catalog';
-const DATABASE_ID = 'ai-studio-lumimei-7c9bf061-363f-4616-997f-7ddb5ae1f0b3';
-const PROJECT_ID = 'lumimei-production-168';
+export const DATABASE_ID = FIRESTORE_DB_ID;
+export const PROJECT_ID = FIREBASE_PROJECT_ID;
 
 // In-memory cache for fast synchronous access
 let inMemoryProductsCache: Product[] = [];
 let isFirestoreListenerAttached = false;
 let isSeedingInProgress = false;
-
-/**
- * Format a Product object to Firestore REST API fields structure
- */
-function productToRestFields(p: Product) {
-  const fields: Record<string, any> = {
-    id: { stringValue: p.id },
-    name: { stringValue: p.name || '' },
-    nameKm: { stringValue: p.nameKm || '' },
-    nameZh: { stringValue: p.nameZh || '' },
-    brand: { stringValue: p.brand || 'Lumimei Cambodia' },
-    category: { stringValue: p.category || 'all' },
-    priceUsd: { doubleValue: Number(p.priceUsd) || 0 },
-    priceKhr: { integerValue: String(p.priceKhr || Math.round((Number(p.priceUsd) || 0) * KHR_RATE)) },
-    image: { stringValue: p.image || '' },
-    isBestSeller: { booleanValue: !!p.isBestSeller },
-    isNew: { booleanValue: !!p.isNew },
-    isFreeShipping: { booleanValue: !!p.isFreeShipping },
-    stock: { integerValue: String(p.stock ?? 100) },
-    order: { integerValue: String(p.order ?? 0) },
-  };
-
-  if (p.originalPriceUsd) fields.originalPriceUsd = { doubleValue: Number(p.originalPriceUsd) };
-  if (p.volume) fields.volume = { stringValue: p.volume };
-  if (p.description) fields.description = { stringValue: p.description };
-  if (p.descriptionKm) fields.descriptionKm = { stringValue: p.descriptionKm };
-  if (p.descriptionZh) fields.descriptionZh = { stringValue: p.descriptionZh };
-  if (p.howToUse) fields.howToUse = { stringValue: p.howToUse };
-  if (p.howToUseKm) fields.howToUseKm = { stringValue: p.howToUseKm };
-  if (p.howToUseZh) fields.howToUseZh = { stringValue: p.howToUseZh };
-  if (p.ingredients) fields.ingredients = { stringValue: p.ingredients };
-  if (p.madeInKm) fields.madeInKm = { stringValue: p.madeInKm };
-  if (p.videoUrl) fields.videoUrl = { stringValue: p.videoUrl };
-  if (p.newUserGuideKm) fields.newUserGuideKm = { stringValue: p.newUserGuideKm };
-
-  if (Array.isArray(p.gallery)) {
-    fields.gallery = {
-      arrayValue: { values: p.gallery.map((g) => ({ stringValue: g })) },
-    };
-  }
-  if (Array.isArray(p.skinTypes)) {
-    fields.skinTypes = {
-      arrayValue: { values: p.skinTypes.map((st) => ({ stringValue: st })) },
-    };
-  }
-  if (Array.isArray(p.skinConcerns)) {
-    fields.skinConcerns = {
-      arrayValue: { values: p.skinConcerns.map((sc) => ({ stringValue: sc })) },
-    };
-  }
-  if (Array.isArray(p.benefitsKm)) {
-    fields.benefitsKm = {
-      arrayValue: { values: p.benefitsKm.map((b) => ({ stringValue: b })) },
-    };
-  }
-  if (Array.isArray(p.suitableForKm)) {
-    fields.suitableForKm = {
-      arrayValue: { values: p.suitableForKm.map((s) => ({ stringValue: s })) },
-    };
-  }
-  if (Array.isArray(p.notSuitableForKm)) {
-    fields.notSuitableForKm = {
-      arrayValue: { values: p.notSuitableForKm.map((ns) => ({ stringValue: ns })) },
-    };
-  }
-  if (Array.isArray(p.whoCanUseKm)) {
-    fields.whoCanUseKm = {
-      arrayValue: { values: p.whoCanUseKm.map((w) => ({ stringValue: w })) },
-    };
-  }
-  if (Array.isArray(p.whoCannotUseKm)) {
-    fields.whoCannotUseKm = {
-      arrayValue: { values: p.whoCannotUseKm.map((w) => ({ stringValue: w })) },
-    };
-  }
-  if (Array.isArray(p.storageKm)) {
-    fields.storageKm = {
-      arrayValue: { values: p.storageKm.map((st) => ({ stringValue: st })) },
-    };
-  }
-  if (Array.isArray(p.precautionsKm)) {
-    fields.precautionsKm = {
-      arrayValue: { values: p.precautionsKm.map((pr) => ({ stringValue: pr })) },
-    };
-  }
-
-  return fields;
-}
-
-/**
- * REST API direct write fallback for high reliability in restrictive networks
- */
-async function writeProductViaRestApi(product: Product): Promise<boolean> {
-  try {
-    const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents/products/${product.id}`;
-    const payload = { fields: productToRestFields(product) };
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return res.ok;
-  } catch (err) {
-    console.warn('【REST API Write Product】Notice:', err);
-    return false;
-  }
-}
-
-/**
- * REST API direct delete fallback
- */
-async function deleteProductViaRestApi(productId: string): Promise<boolean> {
-  try {
-    const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents/products/${productId}`;
-    const res = await fetch(url, { method: 'DELETE' });
-    return res.ok;
-  } catch (err) {
-    console.warn('【REST API Delete Product】Notice:', err);
-    return false;
-  }
-}
 
 /**
  * Sort products array according to explicit `order` index or ID
@@ -215,21 +99,14 @@ export async function seedInitialProductsToFirestore(force = false): Promise<voi
       priceKhr: p.priceKhr || Math.round((Number(p.priceUsd) || 0) * KHR_RATE),
     }));
 
-    // Seed each product concurrently via SDK & REST API
+    // Seed each product concurrently via Firestore SDK
     const promises = productsToSeed.map(async (prod) => {
       try {
         const docRef = doc(db, 'products', prod.id);
-        const sdkWrite = setDoc(docRef, prod, { merge: true });
-        const restWrite = writeProductViaRestApi(prod);
-        await Promise.race([
-          Promise.allSettled([sdkWrite, restWrite]),
-          new Promise((resolve) => setTimeout(resolve, 4000)),
-        ]);
+        await setDoc(docRef, prod, { merge: true });
         console.log(`【Firestore Product Seeded】${prod.id}: ${prod.name}`);
       } catch (err) {
         console.warn(`【Firestore Product Seed Warning】${prod.id}:`, err);
-        // Fallback direct REST
-        await writeProductViaRestApi(prod);
       }
     });
 
@@ -275,76 +152,13 @@ export async function fetchProductsFromFirestore(): Promise<Product[]> {
       await seedInitialProductsToFirestore();
       return getAllStoredProducts();
     }
-  } catch (err) {
-    console.warn('【Firestore Fetch Fallback】使用本地缓存并尝试后台同步:', err);
-    // Try REST fetch fallback
-    try {
-      const restUrl = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents/products`;
-      const res = await fetch(restUrl);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.documents && Array.isArray(data.documents) && data.documents.length > 0) {
-          const items: Product[] = data.documents.map((d: any) => {
-            const f = d.fields || {};
-            const extractString = (field: any) => field?.stringValue || '';
-            const extractNumber = (field: any) => Number(field?.doubleValue || field?.integerValue || 0);
-            const extractBool = (field: any) => Boolean(field?.booleanValue);
-            const extractArray = (field: any) =>
-              field?.arrayValue?.values?.map((v: any) => v.stringValue || '') || [];
-
-            const id = d.name.split('/').pop() || extractString(f.id);
-            return {
-              id,
-              name: extractString(f.name),
-              nameKm: extractString(f.nameKm),
-              nameZh: extractString(f.nameZh),
-              brand: extractString(f.brand) || 'Lumimei Cambodia',
-              category: extractString(f.category) || 'all',
-              priceUsd: extractNumber(f.priceUsd),
-              priceKhr: extractNumber(f.priceKhr) || Math.round(extractNumber(f.priceUsd) * KHR_RATE),
-              originalPriceUsd: f.originalPriceUsd ? extractNumber(f.originalPriceUsd) : undefined,
-              image: extractString(f.image),
-              gallery: extractArray(f.gallery),
-              skinTypes: extractArray(f.skinTypes),
-              skinConcerns: extractArray(f.skinConcerns),
-              isBestSeller: extractBool(f.isBestSeller),
-              isNew: extractBool(f.isNew),
-              isFreeShipping: extractBool(f.isFreeShipping),
-              stock: extractNumber(f.stock) || 100,
-              order: extractNumber(f.order),
-              description: extractString(f.description),
-              descriptionKm: extractString(f.descriptionKm),
-              descriptionZh: extractString(f.descriptionZh),
-              howToUse: extractString(f.howToUse),
-              howToUseKm: extractString(f.howToUseKm),
-              howToUseZh: extractString(f.howToUseZh),
-              ingredients: extractString(f.ingredients),
-              volume: extractString(f.volume),
-              madeInKm: extractString(f.madeInKm),
-              videoUrl: extractString(f.videoUrl),
-              newUserGuideKm: extractString(f.newUserGuideKm),
-              benefitsKm: extractArray(f.benefitsKm),
-              suitableForKm: extractArray(f.suitableForKm),
-              notSuitableForKm: extractArray(f.notSuitableForKm),
-              whoCanUseKm: extractArray(f.whoCanUseKm),
-              whoCannotUseKm: extractArray(f.whoCannotUseKm),
-              storageKm: extractArray(f.storageKm),
-              precautionsKm: extractArray(f.precautionsKm),
-            } as Product;
-          });
-
-          const sorted = sortProducts(items);
-          updateLocalCache(sorted);
-          return sorted;
-        } else {
-          // If empty via REST as well, trigger seed
-          seedInitialProductsToFirestore();
-        }
-      }
-    } catch (restErr) {
-      console.warn('【REST Fetch Fallback Notice】:', restErr);
+  } catch (err: any) {
+    const isPerm = err?.code === 'permission-denied' || String(err?.message || '').toLowerCase().includes('permission');
+    if (isPerm) {
+      console.warn('【Firestore Products 403】商品权限受限(permission-denied)，使用本地缓存');
+      return getAllStoredProducts();
     }
-
+    console.warn('【Firestore Fetch Fallback】使用本地缓存:', err);
     return getAllStoredProducts();
   }
 }
@@ -383,14 +197,19 @@ export function subscribeToProducts(callback: (products: Product[]) => void): ()
         }
       },
       (error) => {
+        const isPerm = error?.code === 'permission-denied' || String(error?.message || '').toLowerCase().includes('permission');
+        if (isPerm) {
+          console.warn('【Firestore Products 403】商品集合规则限制访问，已自动使用本地商品数据');
+          callback(getAllStoredProducts());
+          return;
+        }
         console.warn('【Firestore onSnapshot Notice】:', error);
-        // On snapshot error, perform one-time fetch fallback
-        fetchProductsFromFirestore().then(callback);
+        fetchProductsFromFirestore().then(callback).catch(() => callback(getAllStoredProducts()));
       }
     );
   } catch (err) {
     console.warn('【Firestore Subscribe Error】:', err);
-    fetchProductsFromFirestore().then(callback);
+    callback(getAllStoredProducts());
   }
 
   // 3. Listen to window events for instant local sync
@@ -425,6 +244,10 @@ export async function saveStoredProduct(product: Product): Promise<Product[]> {
     id: prodId,
     priceKhr: product.priceKhr || Math.round((Number(product.priceUsd) || 0) * KHR_RATE),
   };
+  if (!fullProduct.discountCode) {
+    delete fullProduct.discountCode;
+    delete fullProduct.discountPercent;
+  }
 
   // 1. Instantly update local cache for smooth UI experience
   const current = getAllStoredProducts();
@@ -438,20 +261,18 @@ export async function saveStoredProduct(product: Product): Promise<Product[]> {
   }
   updateLocalCache(updatedList);
 
-  // 2. Persist to Firestore with SDK + REST dual insurance
+  // 2. Persist to Firestore with Firestore SDK
   try {
     const docRef = doc(db, 'products', prodId);
-    const sdkWrite = setDoc(docRef, fullProduct, { merge: true });
-    const restWrite = writeProductViaRestApi(fullProduct);
-
-    await Promise.race([
-      Promise.allSettled([sdkWrite, restWrite]),
-      new Promise((resolve) => setTimeout(resolve, 5000)),
-    ]);
+    const firestoreData: any = { ...fullProduct };
+    if (!fullProduct.discountCode) {
+      firestoreData.discountCode = deleteField();
+      firestoreData.discountPercent = deleteField();
+    }
+    await setDoc(docRef, firestoreData, { merge: true });
     console.log('【Firestore Save Product Success】', prodId);
   } catch (err) {
     console.warn('【Firestore Save Product Warning】:', err);
-    await writeProductViaRestApi(fullProduct);
   }
 
   return updatedList;
@@ -468,20 +289,13 @@ export async function deleteStoredProduct(productId: string): Promise<Product[]>
   const updatedList = current.filter((p) => p.id !== productId);
   updateLocalCache(updatedList);
 
-  // 2. Delete from Firestore with SDK + REST dual insurance
+  // 2. Delete from Firestore with Firestore SDK
   try {
     const docRef = doc(db, 'products', productId);
-    const sdkDelete = deleteDoc(docRef);
-    const restDelete = deleteProductViaRestApi(productId);
-
-    await Promise.race([
-      Promise.allSettled([sdkDelete, restDelete]),
-      new Promise((resolve) => setTimeout(resolve, 5000)),
-    ]);
+    await deleteDoc(docRef);
     console.log('【Firestore Delete Product Success】', productId);
   } catch (err) {
     console.warn('【Firestore Delete Product Warning】:', err);
-    await deleteProductViaRestApi(productId);
   }
 
   return updatedList;
@@ -505,12 +319,9 @@ export async function saveProductsReorder(reorderedProducts: Product[]): Promise
   const updatePromises = indexedList.map(async (prod) => {
     try {
       const docRef = doc(db, 'products', prod.id);
-      await Promise.race([
-        setDoc(docRef, { order: prod.order }, { merge: true }),
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-      ]);
+      await setDoc(docRef, { order: prod.order }, { merge: true });
     } catch (e) {
-      await writeProductViaRestApi(prod);
+      console.warn('【Firestore Reorder Product Notice】:', e);
     }
   });
 

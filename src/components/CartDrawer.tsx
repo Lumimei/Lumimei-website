@@ -8,6 +8,7 @@ interface CartDrawerProps {
   language: Language;
   items: CartItem[];
   onClose: () => void;
+  onNavigateToProducts?: () => void;
   onUpdateQuantity: (productId: string, quantity: number) => void;
   onRemoveItem: (productId: string) => void;
   onProceedToCheckout: (appliedDiscountUsd: number, shippingFeeUsd: number) => void;
@@ -18,6 +19,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   language,
   items,
   onClose,
+  onNavigateToProducts,
   onUpdateQuantity,
   onRemoveItem,
   onProceedToCheckout,
@@ -61,7 +63,17 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const handleApplyPromo = (e: React.FormEvent) => {
     e.preventDefault();
     const code = promoCode.trim().toUpperCase();
-    if (code === 'BEAUTY10') {
+    const matchingProduct = items.find(
+      (item) => item.product.discountCode && item.product.discountCode.trim().toUpperCase() === code
+    );
+
+    if (matchingProduct) {
+      const percent = (matchingProduct.product.discountPercent && matchingProduct.product.discountPercent > 0)
+        ? matchingProduct.product.discountPercent
+        : 10;
+      setAppliedPromo(`${code} (${percent}% Off)`);
+      setPromoDiscountRate(percent / 100);
+    } else if (code === 'BEAUTY10') {
       setAppliedPromo('BEAUTY10 (10% Off)');
       setPromoDiscountRate(0.1);
     } else if (code === 'KHMER20') {
@@ -172,10 +184,20 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                     : 'Explore our skincare collection and find your new holy grails!'}
                 </p>
                 <button
-                  onClick={onClose}
-                  className="mt-2 px-5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition cursor-pointer"
+                  type="button"
+                  id="cart-empty-shop-now-btn"
+                  onClick={() => {
+                    onClose();
+                    if (onNavigateToProducts) {
+                      onNavigateToProducts();
+                    } else {
+                      window.location.hash = '#products';
+                    }
+                  }}
+                  className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl active:scale-95 transition cursor-pointer font-battambang shadow-xs hover:shadow-sm"
                 >
-                  {language === 'km' ? 'ចូលទៅកាន់ហាងលក់' : language === 'zh' ? '立即选购' : 'Shop Now'}
+                  <ShoppingBag className="w-4 h-4 shrink-0" />
+                  <span>{language === 'km' ? 'ចូលទៅកាន់ហាងលក់' : language === 'zh' ? '立即选购' : 'Shop Now'}</span>
                 </button>
               </div>
             ) : (

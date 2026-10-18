@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { RecaptchaVerifier, ConfirmationResult, updatePassword } from 'firebase/auth';
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../../context/AuthContext';
-import { auth, formatToE164, maskPhoneNumber } from '../../lib/firebase';
+import { auth, db, formatToE164, maskPhoneNumber, safeSetItem, hashPassword, ensureFirebaseAuth } from '../../lib/firebase';
+import { compressImageFile, compressImageDataUrl } from '../../utils/imageCompress';
+import { runWithLoading } from '../../utils/asyncUtils';
 import { GreenDiamondIcon } from '../GreenDiamondIcon';
 import { FacebookIconBadge } from '../FacebookIconBadge';
 import {
@@ -11,6 +14,7 @@ import {
   Edit3,
   Trash2,
   LogOut,
+  Save,
   ArrowLeft,
   CheckCircle2,
   AlertTriangle,
@@ -22,17 +26,18 @@ import {
   Lock,
   Eye,
   EyeOff,
-  ExternalLink,
 } from 'lucide-react';
 
 interface AccountSettingsProps {
   onNavigateHome: () => void;
+  onNavigateToDashboard?: () => void;
   onLogoutSuccess: () => void;
   onLanguageChanged?: (lang: 'km' | 'zh' | 'en') => void;
 }
 
 export const AccountSettings: React.FC<AccountSettingsProps> = ({
   onNavigateHome,
+  onNavigateToDashboard,
   onLogoutSuccess,
   onLanguageChanged,
 }) => {
@@ -48,7 +53,14 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
   } = useAuth();
 
   // Member Tier calculation
-  const points = userProfile?.points || 0;
+  const points =
+    userProfile?.points !== undefined
+      ? userProfile.points > 0
+        ? userProfile.points
+        : (!userProfile.totalSpent || userProfile.totalSpent === 0)
+        ? 15
+        : (userProfile.points || 0)
+      : 0;
   const totalSpent = userProfile?.totalSpent || 0;
   const isVvip = totalSpent >= 1000 || points >= 100 || Boolean(userProfile?.isVvip);
   const isVip = !isVvip && (totalSpent >= 200 || points >= 20 || Boolean(userProfile?.isVip));
@@ -59,26 +71,41 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
     localStorage.getItem('lumimei_is_fb_top_friend') === 'true'
   );
 
-  const [isFbBadgeActive, setIsFbBadgeActive] = useState<boolean>(isFacebookTopFriend);
-
-  const handleToggleFbBadge = async () => {
-    const nextState = !isFbBadgeActive;
-    setIsFbBadgeActive(nextState);
-    localStorage.setItem('lumimei_is_fb_top_friend', nextState ? 'true' : 'false');
-    if (currentUser && userProfile) {
-      await updateUserProfile({ isFacebookTopFriend: nextState }).catch(console.error);
-    }
-  };
-
   // Profile Photo state
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [profilePhoto, setProfilePhoto] = useState<string>(() => {
     return (
       userProfile?.photoURL ||
       currentUser?.photoURL ||
+      localStorage.getItem('lumimei_user_photo_url') ||
       ''
     );
   });
+  const [photoUploading, setPhotoUploading] = useState(false);
+
+  // 登录后从 Firestore users 集合读取头像与昵称，确保登出后或刷新后不丢失
+  useEffect(() => {
+    const targetUid = auth.currentUser?.uid || currentUser?.uid;
+    if (targetUid) {
+      getDoc(doc(db, 'users', targetUid))
+        .then((snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data?.photoURL) {
+              setProfilePhoto(data.photoURL);
+              safeSetItem('lumimei_user_photo_url', data.photoURL);
+            }
+            const cloudName = data?.displayName || data?.fullName || data?.name;
+            if (cloudName) {
+              setNewDisplayName(cloudName);
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('【AccountSettings】读取 Firestore 头像与昵称提示:', err);
+        });
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (userProfile?.photoURL) {
@@ -88,30 +115,57 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
     }
   }, [userProfile, currentUser]);
 
-  const handlePhotoUpload = (file: File) => {
+  const handlePhotoUpload = async (file: File) => {
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      showToast('សូមជ្រើសរើសរូបភាពដែលមានទំហំតូចជាង 5MB', 'error');
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('សូមជ្រើសរើសរូបភាពដែលមានទំហំតូចជាង 10MB', 'error');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const dataUrl = e.target?.result as string;
-      if (dataUrl) {
-        setProfilePhoto(dataUrl);
-        localStorage.setItem('lumimei_user_photo_url', dataUrl);
-        window.dispatchEvent(new Event('photoUpdated'));
-        if (currentUser && userProfile) {
-          try {
-            await updateUserProfile({ photoURL: dataUrl });
-          } catch (err) {
-            console.error(err);
-          }
+
+    const targetUid = auth.currentUser?.uid || currentUser?.uid;
+    if (!targetUid) {
+      showToast('អ្នកមិនទាន់បានចូលប្រើប្រាស់ទេ។ សូមចូលគណនីម្ដងទៀត / 请先登录', 'error');
+      return;
+    }
+
+    setSaveError('');
+
+    await runWithLoading(
+      async () => {
+        // 2. 头像上传前压缩到 256x256、JPEG 质量 0.7，控制在 100KB 以内
+        const dataUrl = await compressImageFile(file, 256, 256, 0.7);
+        if (!dataUrl) {
+          throw new Error('មិនអាចបង្រួមរូបភាពបានទេ / 图片压缩失败');
         }
-        showToast('បានផ្លាស់ប្ដូររូប Profile រួចរាល់!');
+
+        await ensureFirebaseAuth();
+
+        // 3. 保存到 users/{auth.currentUser.uid}，用 setDoc(..., { merge: true })
+        const userRef = doc(db, 'users', targetUid);
+        await setDoc(userRef, { photoURL: dataUrl, updatedAt: serverTimestamp() }, { merge: true });
+
+        // 同步本地状态及全局缓存
+        setProfilePhoto(dataUrl);
+        safeSetItem('lumimei_user_photo_url', dataUrl);
+        window.dispatchEvent(new Event('photoUpdated'));
+
+        await updateUserProfile({ photoURL: dataUrl });
+
+        // 4. 保存成功后才显示 "រក្សាទុកបានជោគជ័យ"
+        showToast('រក្សាទុកបានជោគជ័យ', 'success');
+      },
+      setPhotoUploading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.error('Save photo to Firestore failed:', err);
+          const errMsg = err?.friendlyKm || err?.message || 'មិនអាចរក្សាទុកក្នុង Firestore បានទេ។ សូមព្យាយាមម្ដងទៀត។ / 保存头像失败';
+          setSaveError(errMsg);
+          showToast(errMsg, 'error');
+        },
       }
-    };
-    reader.readAsDataURL(file);
+    );
   };
 
   // Name editing state
@@ -160,36 +214,57 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
       return;
     }
 
-    setPasswordLoading(true);
-    try {
-      if (auth.currentUser) {
-        try {
-          await updatePassword(auth.currentUser, newPassword);
-        } catch {
-          // ignore
+    await runWithLoading(
+      async () => {
+        await ensureFirebaseAuth();
+        const targetUid = auth.currentUser?.uid || currentUser?.uid;
+        if (!targetUid) {
+          throw new Error('អ្នកមិនទាន់បានចូលប្រើប្រាស់ទេ។ / 请先登录');
         }
-      }
-      await setUserPassword(newPassword);
-      localStorage.setItem('lumimei_user_password', newPassword);
-      showToast('ពាក្យសម្ងាត់ត្រូវបានផ្លាស់ប្ដូរដោយជោគជ័យ!');
-      setShowPasswordModal(false);
-      setNewPassword('');
-      setConfirmPassword('');
-    } catch (err: any) {
-      console.error('Password update error:', err);
-      try {
+
+        // 4. 手机号账号使用哈希（SHA-256加盐）存储在 users/{uid} 文档中
+        const hashedPassword = await hashPassword(newPassword);
+        const userRef = doc(db, 'users', targetUid);
+        await setDoc(
+          userRef,
+          {
+            passwordHash: hashedPassword,
+            hasPassword: true,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        // 如果 currentUser 具备 Firebase Auth 邮箱密码功能则尝试同步，否则忽略
+        if (auth.currentUser && auth.currentUser.email) {
+          try {
+            await updatePassword(auth.currentUser, newPassword);
+          } catch {
+            // ignore
+          }
+        }
+
         await setUserPassword(newPassword);
-      } catch {
-        // ignore
+
+        // 不存储明文密码，清理旧的明文缓存
+        localStorage.removeItem('lumimei_user_password');
+        localStorage.setItem('lumimei_user_has_password', 'true');
+
+        showToast('ពាក្យសម្ងាត់ត្រូវបានផ្លាស់ប្ដូរដោយជោគជ័យ!');
+        setShowPasswordModal(false);
+        setNewPassword('');
+        setConfirmPassword('');
+      },
+      setPasswordLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.error('Password update error:', err);
+          setPasswordError(err?.friendlyKm || err?.message || 'មិនអាចផ្លាស់ប្ដូរពាក្យសម្ងាត់បានទេ។');
+        },
       }
-      localStorage.setItem('lumimei_user_password', newPassword);
-      showToast('ពាក្យសម្ងាត់ត្រូវបានផ្លាស់ប្ដូរដោយជោគជ័យ!');
-      setShowPasswordModal(false);
-      setNewPassword('');
-      setConfirmPassword('');
-    } finally {
-      setPasswordLoading(false);
-    }
+    );
   };
 
   // Delete account modal state
@@ -221,52 +296,107 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
     e.preventDefault();
     if (!newDisplayName.trim()) return;
 
-    setNameLoading(true);
-    try {
-      await updateUserProfile({
-        displayName: newDisplayName.trim(),
-        fullName: newDisplayName.trim(),
-      });
-      setIsEditingName(false);
-      showToast('បានបច្ចុប្បន្នភាពឈ្មោះដោយជោគជ័យ');
-    } catch (err: any) {
-      showToast(err.message || 'មិនអាចកែប្រែឈ្មោះបានទេ។', 'error');
-    } finally {
-      setNameLoading(false);
-    }
+    await runWithLoading(
+      async () => {
+        await ensureFirebaseAuth();
+        const targetUid = auth.currentUser?.uid || currentUser?.uid;
+        if (targetUid) {
+          const userRef = doc(db, 'users', targetUid);
+          await setDoc(
+            userRef,
+            {
+              displayName: newDisplayName.trim(),
+              fullName: newDisplayName.trim(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+
+        await updateUserProfile({
+          displayName: newDisplayName.trim(),
+          fullName: newDisplayName.trim(),
+        });
+        setIsEditingName(false);
+        showToast('បានបច្ចុប្បន្នភាពឈ្មោះដោយជោគជ័យ');
+      },
+      setNameLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          showToast(err?.message || 'មិនអាចកែប្រែឈ្មោះបានទេ។', 'error');
+        },
+      }
+    );
   };
 
   // Change Preferred Language
   const handleChangeLanguage = async (lang: 'km' | 'zh' | 'en') => {
     setSelectedLang(lang);
-    setLangLoading(true);
-    try {
-      await updateUserProfile({ preferredLanguage: lang });
-      if (onLanguageChanged) {
-        onLanguageChanged(lang);
+    await runWithLoading(
+      async () => {
+        await ensureFirebaseAuth();
+        const targetUid = auth.currentUser?.uid || currentUser?.uid;
+        if (targetUid) {
+          const userRef = doc(db, 'users', targetUid);
+          await setDoc(userRef, { preferredLanguage: lang, updatedAt: serverTimestamp() }, { merge: true });
+        }
+        await updateUserProfile({ preferredLanguage: lang });
+        if (onLanguageChanged) {
+          onLanguageChanged(lang);
+        }
+        showToast('បានផ្លាស់ប្ដូរភាសាដោយជោគជ័យ');
+      },
+      setLangLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          showToast(err?.message || 'មិនអាចប្ដូរភាសាបានទេ។', 'error');
+        },
       }
-      showToast('បានផ្លាស់ប្ដូរភាសាដោយជោគជ័យ');
-    } catch (err: any) {
-      showToast(err.message || 'មិនអាចប្ដូរភាសាបានទេ។', 'error');
-    } finally {
-      setLangLoading(false);
-    }
+    );
   };
 
-  // Initialize reCAPTCHA for phone change
-  const initRecaptchaForChange = (): RecaptchaVerifier => {
+  // Clear change phone reCAPTCHA instance safely
+  const resetChangePhoneRecaptcha = () => {
     if (recaptchaRef.current) {
       try {
         recaptchaRef.current.clear();
-      } catch (e) {
-        // ignore
+      } catch (err) {
+        // Safe ignore
       }
       recaptchaRef.current = null;
     }
+    const container = document.getElementById('recaptcha-change-phone-container');
+    if (container) {
+      container.innerHTML = '';
+    }
+  };
 
-    const verifier = new RecaptchaVerifier(auth, 'recaptcha-change-phone-container', {
+  // Initialize reCAPTCHA for phone change safely
+  const getOrCreateRecaptchaForChange = (): RecaptchaVerifier => {
+    if (recaptchaRef.current) {
+      return recaptchaRef.current;
+    }
+
+    let rootContainer = document.getElementById('recaptcha-change-phone-container');
+    if (!rootContainer) {
+      rootContainer = document.createElement('div');
+      rootContainer.id = 'recaptcha-change-phone-container';
+      rootContainer.style.display = 'none';
+      document.body.appendChild(rootContainer);
+    }
+    rootContainer.innerHTML = '';
+
+    const targetElement = document.createElement('div');
+    rootContainer.appendChild(targetElement);
+
+    const verifier = new RecaptchaVerifier(auth, targetElement, {
       size: 'invisible',
       'expired-callback': () => {
+        resetChangePhoneRecaptcha();
         setPhoneError('reCAPTCHA បានផុតកំណត់។ សូមព្យាយាមម្ដងទៀត។');
         setPhoneLoading(false);
       },
@@ -288,18 +418,24 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
     }
 
     const fullPhone = formatToE164(newCountryCode, newRawPhone);
-    setPhoneLoading(true);
 
-    try {
-      const verifier = initRecaptchaForChange();
-      const confirmation = await sendOTP(fullPhone, verifier);
-      setPhoneConfirmation(confirmation);
-      setPhoneStep('otp');
-    } catch (err: any) {
-      setPhoneError(err.message || 'មិនអាចផ្ញើលេខកូដទៅកាន់លេខថ្មីបានទេ។');
-    } finally {
-      setPhoneLoading(false);
-    }
+    await runWithLoading(
+      async () => {
+        const verifier = await getOrCreateRecaptchaForChange();
+        const confirmation = await sendOTP(fullPhone, verifier);
+        setPhoneConfirmation(confirmation);
+        setPhoneStep('otp');
+      },
+      setPhoneLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          resetChangePhoneRecaptcha();
+          setPhoneError(err.friendlyKm || err.message || 'មិនអាចផ្ញើលេខកូដទៅកាន់លេខថ្មីបានទេ។');
+        },
+      }
+    );
   };
 
   // Step 2: Verify OTP and update phone number
@@ -310,21 +446,117 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
       return;
     }
 
-    setPhoneLoading(true);
     setPhoneError('');
 
-    try {
-      await updateUserPhoneNumber(phoneConfirmation, otpCode);
-      setShowPhoneModal(false);
-      setPhoneStep('input');
-      setNewRawPhone('');
-      setOtpCode('');
-      showToast('បានប្ដូរលេខទូរស័ព្ទដោយជោគជ័យ');
-    } catch (err: any) {
-      setPhoneError(err.message || 'លេខកូដមិនត្រឹមត្រូវទេ។');
-    } finally {
-      setPhoneLoading(false);
-    }
+    await runWithLoading(
+      async () => {
+        await updateUserPhoneNumber(phoneConfirmation, otpCode);
+        setShowPhoneModal(false);
+        setPhoneStep('input');
+        setNewRawPhone('');
+        setOtpCode('');
+        showToast('បានប្ដូរលេខទូរស័ព្ទដោយជោគជ័យ');
+      },
+      setPhoneLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          setPhoneError(err.message || 'លេខកូដមិនត្រឹមត្រូវទេ។');
+        },
+      }
+    );
+  };
+
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string>('');
+
+  // Handle Save Account directly to Firestore with timeout and compression
+  const handleSaveAccount = async () => {
+    setSaveError('');
+
+    await runWithLoading(
+      async () => {
+        await ensureFirebaseAuth();
+        // 1. 确保登录用户 UID (严格使用 auth.currentUser.uid)
+        const targetUid = auth.currentUser?.uid || currentUser?.uid;
+        if (!targetUid) {
+          throw new Error('អ្នកមិនទាន់បានចូលប្រើប្រាស់ទេ។ សូមចូលគណនីម្ដងទៀត / 未检测到登录状态 (auth.currentUser.uid)，请先登录');
+        }
+
+        const finalName = (isEditingName ? newDisplayName : (newDisplayName || currentDisplayName || '')).trim();
+
+        // 2. 头像图片压缩后再保存，控制在 256x256、JPEG 质量 0.7，严格在 100KB 以内
+        let compressedPhoto = profilePhoto;
+        if (profilePhoto && typeof profilePhoto === 'string' && profilePhoto.startsWith('data:image')) {
+          try {
+            compressedPhoto = await compressImageDataUrl(profilePhoto, 256, 256, 0.7);
+          } catch (compErr) {
+            console.warn('【AccountSettings】头像压缩提示:', compErr);
+          }
+        }
+
+        // 构建要保存到 Firestore 的字段
+        const updates: Record<string, any> = {
+          uid: targetUid,
+          preferredLanguage: selectedLang,
+          updatedAt: serverTimestamp(),
+        };
+
+        if (finalName) {
+          updates.displayName = finalName;
+          updates.fullName = finalName;
+          updates.name = finalName;
+        }
+
+        if (compressedPhoto) {
+          updates.photoURL = compressedPhoto;
+        }
+
+        // 3. 写入 Firestore 的文档 ID 必须是 auth.currentUser.uid，并使用 setDoc(..., { merge: true })
+        const userRef = doc(db, 'users', targetUid);
+        await setDoc(userRef, updates, { merge: true });
+
+        // 同步至 AuthContext 状态及本地缓存
+        await updateUserProfile({
+          ...(finalName ? { displayName: finalName, fullName: finalName } : {}),
+          preferredLanguage: selectedLang,
+          ...(compressedPhoto ? { photoURL: compressedPhoto } : {}),
+        });
+
+        if (compressedPhoto) {
+          setProfilePhoto(compressedPhoto);
+          safeSetItem('lumimei_user_photo_url', compressedPhoto);
+          window.dispatchEvent(new Event('photoUpdated'));
+        }
+
+        setIsEditingName(false);
+        if (onLanguageChanged && selectedLang) {
+          onLanguageChanged(selectedLang);
+        }
+
+        // 4. 保存成功后才显示 "រក្សាទុកបានជោគជ័យ"
+        showToast('រក្សាទុកបានជោគជ័យ', 'success');
+        setTimeout(() => {
+          if (onNavigateToDashboard) {
+            onNavigateToDashboard();
+          } else if (onNavigateHome) {
+            onNavigateHome();
+          }
+        }, 600);
+      },
+      setSaveLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.error('Error saving account to Firestore:', err);
+          const errMsg = err?.friendlyKm || err?.message || 'មិនអាចរក្សាទុកក្នុង Firestore បានទេ។ សូមព្យាយាមម្ដងទៀត។ / 保存失败，请重试';
+          setSaveError(errMsg);
+          showToast(errMsg, 'error');
+        },
+      }
+    );
   };
 
   // Handle Logout
@@ -339,15 +571,21 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
 
   // Handle Delete Account
   const handleDeleteAccount = async () => {
-    setDeleteLoading(true);
-    try {
-      await deleteAccount();
-      setShowDeleteModal(false);
-      onNavigateHome();
-    } catch (err: any) {
-      showToast(err.message || 'មិនអាចលុបគណនីបានទេ។ សូមព្យាយាមម្ដងទៀត។', 'error');
-      setDeleteLoading(false);
-    }
+    await runWithLoading(
+      async () => {
+        await deleteAccount();
+        setShowDeleteModal(false);
+        onNavigateHome();
+      },
+      setDeleteLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          showToast(err.message || 'មិនអាចលុបគណនីបានទេ។ សូមព្យាយាមម្ដងទៀត។', 'error');
+        },
+      }
+    );
   };
 
   const currentDisplayName = userProfile?.fullName || userProfile?.displayName || currentUser?.displayName || 'អ្នកប្រើប្រាស់';
@@ -373,23 +611,14 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
         </div>
       )}
 
-      {/* Back to Home Button */}
+      {/* Back to My Account Button */}
       <button
-        onClick={onNavigateHome}
+        onClick={onNavigateToDashboard || onNavigateHome}
         className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-emerald-700 font-bold transition cursor-pointer"
       >
         <ArrowLeft className="w-4 h-4" />
-        <span>ត្រឡប់ទៅទំព័រដើម</span>
+        <span>ត្រឡប់ទៅគណនីខ្ញុំ</span>
       </button>
-
-      {/* Header Title */}
-      <div className="bg-white rounded-3xl p-6 shadow-sm border border-emerald-100 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 font-opensans">
-            ការកំណត់គណនី
-          </h1>
-        </div>
-      </div>
 
       {/* Profile Information List */}
       <div className="bg-white rounded-3xl p-6 shadow-sm border border-emerald-100 space-y-6">
@@ -403,11 +632,16 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
                   <img
                     src={profilePhoto}
                     alt={currentDisplayName}
-                    className="w-full h-full object-cover rounded-full"
+                    className={`w-full h-full object-cover rounded-full transition-opacity duration-200 ${photoUploading ? 'opacity-40' : 'opacity-100'}`}
                   />
                 ) : (
                   <div className="w-full h-full bg-slate-900 rounded-full flex items-center justify-center text-amber-300 font-extrabold text-2xl">
                     {currentDisplayName.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                {photoUploading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/20 rounded-full">
+                    <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" />
                   </div>
                 )}
               </div>
@@ -477,7 +711,9 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
                         ⭐
                       </span>
                     )}
-                    <FacebookIconBadge size={17} title="Facebook Top Friends" />
+                    {isFacebookTopFriend && (
+                      <FacebookIconBadge size={17} title="Facebook Top Friends" />
+                    )}
                   </div>
                 </div>
               )}
@@ -487,11 +723,21 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
           <div className="shrink-0 self-start sm:self-center">
             <button
               type="button"
+              disabled={photoUploading}
               onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border border-slate-200 cursor-pointer"
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border border-slate-200 cursor-pointer"
             >
-              <Camera className="w-4 h-4 text-slate-600" />
-              <span>ប្តូររូប Profile</span>
+              {photoUploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 text-emerald-600 animate-spin" />
+                  <span>កំពុងរក្សាទុក...</span>
+                </>
+              ) : (
+                <>
+                  <Camera className="w-4 h-4 text-slate-600" />
+                  <span>ប្តូររូប Profile</span>
+                </>
+              )}
             </button>
             <input
               type="file"
@@ -561,49 +807,7 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
           </button>
         </div>
 
-        {/* Item 4: Facebook Top Friends Badge */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-slate-100">
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-2xl bg-[#1877F2]/10 text-[#1877F2]">
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-              </svg>
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-slate-400 font-semibold">ផ្លាកសញ្ញា Facebook Top Friends</p>
-                <FacebookIconBadge size={18} title="Facebook Top Friends" />
-              </div>
-              <p className="text-xs font-bold text-slate-800 mt-0.5">
-                {isFbBadgeActive ? '✅ បានបើកដំណើរការសញ្ញា Facebook' : 'សញ្ញាពិសេសសម្រាប់អ្នកគាំទ្រ Facebook'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <a
-              href="https://www.facebook.com/LumimeiCambodia"
-              target="_blank"
-              rel="noreferrer"
-              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#1877F2] rounded-xl text-xs font-bold transition flex items-center gap-1 border border-blue-200"
-            >
-              <span>ទំព័រ Facebook</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
-            <button
-              onClick={handleToggleFbBadge}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                isFbBadgeActive
-                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-xs'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
-              }`}
-            >
-              {isFbBadgeActive ? '✓ បានបើក Badge' : 'បើក Badge'}
-            </button>
-          </div>
-        </div>
-
-        {/* Item 5: Preferred Language Switcher */}
+        {/* Item 4: Preferred Language Switcher */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-slate-100">
           <div className="flex items-center gap-3">
             <div className="p-3 rounded-2xl bg-emerald-50 text-emerald-700">
@@ -651,21 +855,44 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
           </div>
         </div>
 
-        {/* Account Actions: Logout & Delete Account */}
+        {/* Error Alert Display for Save Operation */}
+        {saveError && (
+          <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2.5 text-xs text-red-700 font-semibold animate-in fade-in duration-200">
+            <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p>{saveError}</p>
+            </div>
+            <button
+              onClick={() => setSaveError('')}
+              className="text-red-400 hover:text-red-600 p-0.5 rounded cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Account Actions: Save & Delete Account */}
         <div className="pt-2 flex flex-col sm:flex-row gap-3">
           <button
-            onClick={handleLogout}
-            className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-2xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 border border-slate-300"
+            onClick={handleSaveAccount}
+            disabled={saveLoading}
+            style={{ backgroundColor: '#2E8B57', color: '#FFFFFF' }}
+            className="flex-1 py-3 px-4 rounded-2xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 border border-[#2E8B57] shadow-xs hover:opacity-95 active:scale-[0.99] disabled:opacity-70"
           >
-            <LogOut className="w-4 h-4 text-slate-600" />
-            <span>Logout</span>
+            {saveLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin text-white" />
+            ) : (
+              <Save className="w-4 h-4 text-white" />
+            )}
+            <span>រក្សាទុក</span>
           </button>
 
           <button
             onClick={() => setShowDeleteModal(true)}
-            className="flex-1 py-3 px-4 bg-red-50 hover:bg-red-100 text-red-700 rounded-2xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 border border-red-200"
+            style={{ backgroundColor: '#FF7F50', color: '#FFFFFF' }}
+            className="flex-1 py-3 px-4 rounded-2xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 border border-[#FF7F50] shadow-xs hover:opacity-95 active:scale-[0.99]"
           >
-            <Trash2 className="w-4 h-4 text-red-600" />
+            <Trash2 className="w-4 h-4 text-white" />
             <span>លុបគណនី</span>
           </button>
         </div>
@@ -674,7 +901,6 @@ export const AccountSettings: React.FC<AccountSettingsProps> = ({
       {/* Change Phone Number Modal */}
       {showPhoneModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div id="recaptcha-change-phone-container"></div>
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl relative border border-emerald-100 animate-in fade-in zoom-in-95 duration-200">
             <button
               onClick={() => setShowPhoneModal(false)}

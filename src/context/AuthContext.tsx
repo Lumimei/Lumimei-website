@@ -11,6 +11,7 @@ import {
   PhoneAuthProvider,
   updatePhoneNumber,
   deleteUser,
+  linkWithCredential,
 } from 'firebase/auth';
 import {
   auth,
@@ -23,11 +24,17 @@ import {
   serverTimestamp,
   UserProfile,
   getKhmerErrorMessage,
+  explainAuthError,
   hashPassword,
   findUserByPhone,
   findUserByNameOrPhone,
+  verifyCustomerLoginName,
+  isLikelyPhoneNumber,
   saveMockUser,
   getMockUsers,
+  performStorageCleanup,
+  safeSetItem,
+  ensureFirebaseAuth,
 } from '../lib/firebase';
 
 interface AuthContextType {
@@ -35,8 +42,8 @@ interface AuthContextType {
   userProfile: UserProfile | null;
   loading: boolean;
   sendOTP: (phoneNumber: string, appVerifier: RecaptchaVerifier) => Promise<ConfirmationResult>;
-  verifyOTP: (confirmationResult: ConfirmationResult, code: string) => Promise<{ isNewUser: boolean; user: User }>;
-  loginWithPassword: (phoneNumber: string, password: string) => Promise<UserProfile>;
+  verifyOTP: (confirmationResult: ConfirmationResult, code: string) => Promise<{ isNewUser: boolean; user: User; profile: UserProfile | null }>;
+  loginWithPassword: (nameOrPhone: string, password: string, phoneInput?: string) => Promise<UserProfile>;
   registerWithPassword: (data: {
     displayName: string;
     fullName?: string;
@@ -45,6 +52,7 @@ interface AuthContextType {
     telegram?: string;
     gender?: string;
     ageRange?: string;
+    location?: string;
     skinConcerns?: string[];
     acneDetails?: string;
     preferredLanguage?: 'km' | 'zh' | 'en';
@@ -57,6 +65,7 @@ interface AuthContextType {
     telegram?: string;
     gender?: string;
     ageRange?: string;
+    location?: string;
     preferredLanguage?: 'km' | 'zh' | 'en';
     skinConcerns?: string[];
     acneDetails?: string;
@@ -76,24 +85,126 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Helper to fetch user document directly from Firestore users collection
+  const fetchProfileFromFirestore = async (uid: string, timeoutMs: number = 3000): Promise<Partial<UserProfile> | null> => {
+    const targetUid = uid || auth.currentUser?.uid;
+    if (!targetUid) return null;
+    try {
+      const userRef = doc(db, 'users', targetUid);
+      // Timeout protection so Firestore getDoc never hangs indefinitely
+      const snap = await Promise.race([
+        getDoc(userRef),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+      ]);
+      if (snap && (snap as any).exists && (snap as any).exists()) {
+        const data = (snap as any).data();
+        const resolvedName = data.displayName || data.fullName || data.name || '';
+        console.log(`【AuthContext】已从 Firestore 成功读取用户资料 (UID: ${targetUid})，昵称: ${resolvedName}，头像有效: ${Boolean(data?.photoURL)}`);
+        return {
+          uid: targetUid,
+          photoURL: data.photoURL || '',
+          displayName: resolvedName,
+          fullName: data.fullName || resolvedName,
+          phoneNumber: data.phoneNumber || '',
+          preferredLanguage: data.preferredLanguage || 'km',
+          telegram: data.telegram || '',
+          gender: data.gender || '',
+          ageRange: data.ageRange || '',
+          role: data.role || 'user',
+          points: typeof data.points === 'number' ? data.points : undefined,
+          totalSpent: typeof data.totalSpent === 'number' ? data.totalSpent : undefined,
+          tier: data.tier || 'normal',
+          isVip: Boolean(data.isVip),
+          isVvip: Boolean(data.isVvip),
+          isFacebookTopFriend: Boolean(data.isFacebookTopFriend),
+          skinConcerns: data.skinConcerns || [],
+          acneDetails: data.acneDetails || '',
+        };
+      }
+    } catch (err: any) {
+      console.warn('【AuthContext】从 Firestore users 读取资料提示:', err?.message || err);
+    }
+    return null;
+  };
+
   // Fetch profile directly from localStorage('app_users')
   const fetchProfile = async (uid: string): Promise<UserProfile | null> => {
     const appUsers = getMockUsers();
     const found = appUsers.find((u) => u.uid === uid || (u as any).id === uid);
+    if (found && found.role === 'user' && (found.points === 0 || found.points === undefined) && (!found.totalSpent || found.totalSpent === 0)) {
+      found.points = 15;
+      saveMockUser(found, false);
+    }
     return found || null;
   };
 
   // Auth State Listener
   useEffect(() => {
+    // Clean up bloated / duplicate localStorage items immediately on startup
+    performStorageCleanup();
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setCurrentUser(user);
+        // 1. Fast local cache load to prevent UI blocking
         let profile = await fetchProfile(user.uid);
+        if (!profile && user.phoneNumber) {
+          try {
+            profile = await findUserByPhone(user.phoneNumber);
+          } catch {}
+        }
+        if (profile) {
+          setUserProfile(profile);
+          if (profile.photoURL) {
+            safeSetItem('lumimei_user_photo_url', profile.photoURL);
+          }
+        }
+
+        // 2. 关键：登录后从 Firestore 读取头像及最新资料，而不是只用本地状态
+        try {
+          // If profile found with matching phone has a canonical uid, prefer that
+          const targetDocUid = profile?.uid || user.uid;
+          const cloudData = await fetchProfileFromFirestore(targetDocUid);
+          if (cloudData) {
+            profile = {
+              ...(profile || {
+                uid: targetDocUid,
+                displayName: user.displayName || 'អ្នកប្រើប្រាស់',
+                fullName: user.displayName || 'អ្នកប្រើប្រាស់',
+                phoneNumber: user.phoneNumber || '',
+                preferredLanguage: 'km',
+                skinConcerns: [],
+                acneDetails: '',
+                role: 'user',
+                points: 15,
+                totalSpent: 0,
+                tier: 'normal',
+                isVip: false,
+                isVvip: false,
+                isFacebookTopFriend: false,
+                consentAccepted: true,
+                consentVersion: '1.0',
+                createdAt: new Date(),
+              }),
+              ...cloudData,
+              // 确保 Firestore 中的头像 photoURL 生效
+              photoURL: cloudData.photoURL || profile?.photoURL || user.photoURL || '',
+            };
+            if (cloudData.photoURL) {
+              safeSetItem('lumimei_user_photo_url', cloudData.photoURL);
+            }
+            saveMockUser(profile, false);
+            setUserProfile(profile);
+          }
+        } catch (cloudErr) {
+          console.warn('【AuthContext】读取 Firestore 用户资料失败:', cloudErr);
+        }
+
         if (!profile && (user.displayName || user.photoURL)) {
           const exactName = (user.displayName || 'Facebook User').trim();
           const photo = user.photoURL || '';
           if (photo) {
-            localStorage.setItem('lumimei_user_photo_url', photo);
+            safeSetItem('lumimei_user_photo_url', photo);
           }
           profile = {
             uid: user.uid,
@@ -105,7 +216,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             skinConcerns: [],
             acneDetails: '',
             role: 'user',
-            points: 0,
+            points: 15,
             totalSpent: 0,
             tier: 'normal',
             isVip: false,
@@ -116,11 +227,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: new Date(),
           };
           saveMockUser(profile, false);
-        } else if (profile && user.photoURL && !profile.photoURL) {
-          profile = { ...profile, photoURL: user.photoURL };
-          saveMockUser(profile, false);
+          setUserProfile(profile);
         }
-        setUserProfile(profile);
         setLoading(false);
       } else {
         // If not in Firebase Auth, check if user logged in with password stored in session
@@ -129,7 +237,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (savedSession) {
             const parsed = JSON.parse(savedSession);
             if (parsed.uid) {
-              const profile = await fetchProfile(parsed.uid);
+              let profile = await fetchProfile(parsed.uid);
+              try {
+                const cloudData = await fetchProfileFromFirestore(parsed.uid);
+                if (cloudData) {
+                  profile = { ...(profile || { uid: parsed.uid }), ...cloudData } as UserProfile;
+                  if (cloudData.photoURL) {
+                    safeSetItem('lumimei_user_photo_url', cloudData.photoURL);
+                  }
+                  saveMockUser(profile, false);
+                }
+              } catch {}
+
               if (profile) {
                 const syntheticUser: any = {
                   uid: profile.uid,
@@ -157,35 +276,175 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
+  // Listen for points updates from quiz verification, missions, or admin updates
+  useEffect(() => {
+    const handleSyncProfile = () => {
+      const activeUid = currentUser?.uid || userProfile?.uid;
+      const activePhone = currentUser?.phoneNumber || userProfile?.phoneNumber || (userProfile as any)?.phone;
+
+      if (!activeUid && !activePhone) return;
+
+      const appUsers = getMockUsers();
+      const found = appUsers.find(
+        (u) =>
+          (activeUid && (u.uid === activeUid || (u as any).id === activeUid)) ||
+          (activePhone && (u.phoneNumber === activePhone || (u as any).phone === activePhone))
+      );
+
+      if (found) {
+        setUserProfile((prev) => {
+          if (!prev) return found;
+          if (
+            prev.points !== found.points ||
+            prev.tier !== found.tier ||
+            prev.totalSpent !== found.totalSpent ||
+            prev.displayName !== found.displayName
+          ) {
+            return { ...prev, ...found };
+          }
+          return prev;
+        });
+      }
+    };
+
+    window.addEventListener('pointsUpdated', handleSyncProfile);
+    window.addEventListener('app_users_updated', handleSyncProfile);
+    window.addEventListener('mock_users_updated', handleSyncProfile);
+
+    return () => {
+      window.removeEventListener('pointsUpdated', handleSyncProfile);
+      window.removeEventListener('app_users_updated', handleSyncProfile);
+      window.removeEventListener('mock_users_updated', handleSyncProfile);
+    };
+  }, [currentUser?.uid, currentUser?.phoneNumber, userProfile?.uid, userProfile?.phoneNumber]);
+
   // Send OTP
   const sendOTP = async (phoneNumber: string, appVerifier: RecaptchaVerifier): Promise<ConfirmationResult> => {
     try {
+      console.log('【Firebase Phone Auth】正在发送短信验证码 (signInWithPhoneNumber):', phoneNumber);
       const confirmationResult = await signInWithPhoneNumber(auth, phoneNumber, appVerifier);
+      console.log('【Firebase Phone Auth】短信发送成功，verificationId:', confirmationResult.verificationId);
       return confirmationResult;
     } catch (error: any) {
-      const message = getKhmerErrorMessage(error.code || error.message || '');
-      throw new Error(message);
+      const diag = explainAuthError(error);
+      console.warn('【Firebase sendOTP 异常】详细信息:', {
+        code: diag.code,
+        message: diag.rawMessage,
+        phoneNumber,
+        hint: diag.hint,
+        actionRequired: diag.actionRequired,
+      });
+
+      // Preserve full error properties on the thrown error
+      const enhancedError: any = new Error(diag.friendlyKm);
+      enhancedError.code = diag.code;
+      enhancedError.rawMessage = diag.rawMessage;
+      enhancedError.friendlyKm = diag.friendlyKm;
+      enhancedError.friendlyZh = diag.friendlyZh;
+      enhancedError.hint = diag.hint;
+      enhancedError.phoneNumber = phoneNumber;
+      throw enhancedError;
     }
   };
 
   // Verify OTP
-  const verifyOTP = async (confirmationResult: ConfirmationResult, code: string): Promise<{ isNewUser: boolean; user: User }> => {
+  const verifyOTP = async (confirmationResult: ConfirmationResult, code: string): Promise<{ isNewUser: boolean; user: User; profile: UserProfile | null }> => {
     try {
-      const result = await confirmationResult.confirm(code);
+      console.log('【Firebase Phone Auth】正在验证短信验证码 (confirm OTP)...');
+      if (!confirmationResult || typeof confirmationResult.confirm !== 'function') {
+        throw new Error('លេខកូដសុពលភាពបានផុតកំណត់ សូមផ្ញើលេខកូដម្តងទៀត / 验证会话已过期，请重新获取验证码');
+      }
+
+      // Add a 15-second Promise.race timeout specifically to confirmationResult.confirm
+      const result = await Promise.race([
+        confirmationResult.confirm(code),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('ការផ្ទៀងផ្ទាត់កូដ OTP លើសពេលកំណត់ (15 វិនាទី) សូមព្យាយាមម្ដងទៀត / 验证码验证超时（15秒），请重试')), 15000)
+        ),
+      ]);
       const user = result.user;
       setCurrentUser(user);
 
-      // Check if user document exists in Firestore
-      const profile = await fetchProfile(user.uid);
+      // 立即检查本地或已有资料，避免 ProtectedRoute 阻断
+      let profile = await fetchProfile(user.uid);
+      if (!profile && user.phoneNumber) {
+        try {
+          profile = await findUserByPhone(user.phoneNumber);
+        } catch {}
+      }
+      if (!profile && user.phoneNumber) {
+        const cleanPhone = user.phoneNumber.replace(/\D/g, '');
+        const allUsers = getMockUsers();
+        profile = allUsers.find((u) => {
+          const uClean = (u.phoneNumber || '').replace(/\D/g, '');
+          return uClean && cleanPhone && uClean === cleanPhone;
+        }) || null;
+      }
+
+      const isNew = !profile;
+
+      // 如果尚未有本地 Profile，立即生成默认资料，确保登录后立刻能进页面
+      if (!profile) {
+        const exactName = user.phoneNumber ? `User ${user.phoneNumber.slice(-4)}` : 'អ្នកប្រើប្រាស់';
+        profile = {
+          uid: user.uid,
+          displayName: exactName,
+          fullName: exactName,
+          phoneNumber: user.phoneNumber || '',
+          preferredLanguage: 'km',
+          skinConcerns: [],
+          acneDetails: '',
+          role: 'user',
+          points: 15,
+          totalSpent: 0,
+          tier: 'normal',
+          isVip: false,
+          isVvip: false,
+          isFacebookTopFriend: false,
+          consentAccepted: true,
+          consentVersion: '1.0',
+          createdAt: new Date(),
+        };
+        saveMockUser(profile, false);
+      }
+
+      // 异步读取 Firestore 资料（设置 2.5s 超时防卡死），如果超时则由 onAuthStateChanged 后台异步补充
+      try {
+        const targetDocUid = profile?.uid || user.uid;
+        const cloudData = await fetchProfileFromFirestore(targetDocUid, 2500);
+        if (cloudData) {
+          profile = { ...profile, ...cloudData };
+          if (cloudData.photoURL) {
+            safeSetItem('lumimei_user_photo_url', cloudData.photoURL);
+          }
+          saveMockUser(profile, false);
+        }
+      } catch (cloudErr) {
+        console.warn('【AuthContext】verifyOTP 从 Firestore 读取头像提示:', cloudErr);
+      }
+
       setUserProfile(profile);
 
       return {
-        isNewUser: !profile,
+        isNewUser: isNew,
         user,
+        profile,
       };
     } catch (error: any) {
-      const message = getKhmerErrorMessage(error.code || error.message || '');
-      throw new Error(message);
+      const diag = explainAuthError(error);
+      console.error('【Firebase verifyOTP 失败】详细信息:', {
+        code: diag.code,
+        message: diag.rawMessage,
+        fullError: error,
+      });
+
+      const enhancedError: any = new Error(diag.friendlyKm);
+      enhancedError.code = diag.code;
+      enhancedError.rawMessage = diag.rawMessage;
+      enhancedError.friendlyKm = diag.friendlyKm;
+      enhancedError.friendlyZh = diag.friendlyZh;
+      enhancedError.hint = diag.hint;
+      throw enhancedError;
     }
   };
 
@@ -206,7 +465,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const exactName = (user.displayName || 'Facebook User').trim();
         const photo = user.photoURL || '';
         if (photo) {
-          localStorage.setItem('lumimei_user_photo_url', photo);
+          safeSetItem('lumimei_user_photo_url', photo);
         }
 
         const newProfile: UserProfile = {
@@ -220,6 +479,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           acneDetails: '',
           role: 'user',
           points: 0,
+          claimedNewCustomerBonus: false,
           totalSpent: 0,
           tier: 'normal',
           isVip: false,
@@ -231,6 +491,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         saveMockUser(newProfile, false);
+
+        // Ensure task-new-customer is ready for the customer to claim by themselves
+        try {
+          const existingCompleted = JSON.parse(localStorage.getItem('lumimei_completed_mission_tasks') || '[]');
+          const nextCompletedTasks = existingCompleted.filter((id: string) => id !== 'task-new-customer');
+          localStorage.setItem('lumimei_completed_mission_tasks', JSON.stringify(nextCompletedTasks));
+          localStorage.removeItem('lumimei_claimed_new_customer_bonus');
+          localStorage.removeItem(`lumimei_claimed_new_customer_bonus_${user.uid}`);
+        } catch {}
 
         // Dual-write to backend server to ensure admin dashboard synchronization
         try {
@@ -245,6 +514,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               phoneNumber: user.phoneNumber || '',
               photoURL: photo,
               points: 0,
+              claimedNewCustomerBonus: false,
               tier: 'normal',
               role: 'user',
             }),
@@ -255,8 +525,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         // If profile exists and user logged in with Facebook, update photoURL or isFacebookTopFriend if needed
         if (user.photoURL && !profile.photoURL) {
-          localStorage.setItem('lumimei_user_photo_url', user.photoURL);
+          safeSetItem('lumimei_user_photo_url', user.photoURL);
         }
+      }
+
+      // 登录后从 Firestore 读取头像及最新资料
+      try {
+        const cloudData = await fetchProfileFromFirestore(user.uid);
+        if (cloudData) {
+          profile = { ...(profile || {}), ...cloudData } as UserProfile;
+          if (cloudData.photoURL) {
+            safeSetItem('lumimei_user_photo_url', cloudData.photoURL);
+          }
+          saveMockUser(profile, false);
+        }
+      } catch (cloudErr) {
+        console.warn('【AuthContext】loginWithFacebook 读取 Firestore 头像提示:', cloudErr);
       }
 
       setUserProfile(profile);
@@ -296,10 +580,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // If profile already exists, preserve points, orders, tier, and simply update profile details
-    const existing = await fetchProfile(uid);
+    let existing = await fetchProfile(uid);
+    if (!existing && phoneNumber) {
+      try {
+        existing = await findUserByPhone(phoneNumber);
+      } catch {}
+    }
+    const targetUid = existing?.uid || uid;
     if (existing) {
       const updatedProfile: UserProfile = {
         ...existing,
+        uid: targetUid,
         displayName: exactName || existing.displayName,
         fullName: exactName || existing.fullName,
         telegram: data.telegram !== undefined ? data.telegram : existing.telegram,
@@ -311,29 +602,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         passwordHash: passwordHash || existing.passwordHash,
         hasPassword: hasPassword || existing.hasPassword,
       };
-      try {
-        const userRef = doc(db, 'users', uid);
-        const writeData = {
-          ...updatedProfile,
-          updatedAt: serverTimestamp(),
-        };
-        await setDoc(userRef, writeData, { merge: true });
-      } catch (err: any) {
-        console.error('Firestore update existing user profile failed in users collection:', err?.message || err);
-      }
+      // Save locally first to prevent UI stalls
       setUserProfile(updatedProfile);
+      saveMockUser(updatedProfile, false);
+
+      // Async Firestore write in background without blocking
+      const userRef = doc(db, 'users', targetUid);
+      const writeData = {
+        ...updatedProfile,
+        updatedAt: serverTimestamp(),
+      };
+      setDoc(userRef, writeData, { merge: true })
+        .then(() => console.log("【Firestore】更新已有用户资料成功 (UID: " + targetUid + ")"))
+        .catch((err: any) => console.warn('【Firestore】更新用户资料提示 (非阻塞):', err?.message || err));
+
       return updatedProfile;
     }
 
-    // Ensure new user starts with no photo, fresh 0 total spent, 0 points and fresh missions
+    // Initial points for new account is 0 (customer can claim the 15 bonus points in missions)
+    const startingPoints = 0;
+    localStorage.setItem('lumimei_guest_points', '0');
+
+    // Ensure task-new-customer is ready for the customer to claim by themselves
+    let existingCompleted: string[] = [];
+    try {
+      existingCompleted = JSON.parse(localStorage.getItem('lumimei_completed_mission_tasks') || '[]');
+    } catch {}
+    const nextCompletedTasks = existingCompleted.filter((id) => id !== 'task-new-customer');
+    localStorage.setItem('lumimei_completed_mission_tasks', JSON.stringify(nextCompletedTasks));
+    localStorage.removeItem('lumimei_claimed_new_customer_bonus');
+    localStorage.removeItem(`lumimei_claimed_new_customer_bonus_${uid}`);
+
+    // Clear old browser storage caches but keep clean state
     localStorage.removeItem('lumimei_user_photo_url');
     localStorage.removeItem('lumimei_user_orders');
     localStorage.removeItem('lumimei_is_fb_top_friend');
-    localStorage.removeItem('lumimei_completed_mission_tasks');
-    localStorage.removeItem('lumimei_guest_points');
     localStorage.removeItem('lumimei_quiz_saved_answers');
     localStorage.removeItem('lumimei_quiz_pending_questions');
     localStorage.removeItem('lumimei_quiz_answered_ids');
+    localStorage.removeItem('lumimei_quiz_answered_once_ids');
 
     const newProfile: UserProfile = {
       uid,
@@ -349,7 +656,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       skinConcerns: data.skinConcerns || [],
       acneDetails: data.acneDetails || '',
       role: 'user',
-      points: 0,
+      points: 0, // Starting points are 0; user claims 15 points on the points page
+      claimedNewCustomerBonus: false,
       totalSpent: 0,
       tier: 'normal',
       isVip: false,
@@ -360,37 +668,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAt: new Date(),
     };
 
-    // Save to Firestore using UID as document ID
-    try {
-      const userRef = doc(db, 'users', uid);
-      await setDoc(userRef, {
-        uid,
-        name: exactName || "新用户",
-        displayName: exactName,
-        fullName: exactName,
-        phoneNumber,
-        telegram: data.telegram || '',
-        gender: data.gender || '',
-        ageRange: data.ageRange || '',
-        passwordHash,
-        hasPassword,
-        preferredLanguage: data.preferredLanguage || 'km',
-        skinConcerns: data.skinConcerns || [],
-        acneDetails: data.acneDetails || '',
-        role: 'user',
-        points: 0,
-        totalSpent: 0,
-        tier: 'normal',
-        createdAt: new Date().toISOString(),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-      console.log("【调试】Firestore 数据写入成功！UID:", uid);
-    } catch (dbErr: any) {
-      console.warn("Firestore 写入提示:", dbErr?.message || dbErr);
-    }
-
-    // Save customer profile directly to localStorage('app_users')
+    // Save customer profile directly to local state and localStorage immediately
     saveMockUser(newProfile, false);
+    setUserProfile(newProfile);
+
+    // Save to Firestore asynchronously without blocking navigation or UI
+    const userRef = doc(db, 'users', uid);
+    setDoc(userRef, {
+      uid,
+      name: exactName || "新用户",
+      displayName: exactName,
+      fullName: exactName,
+      phoneNumber,
+      telegram: data.telegram || '',
+      gender: data.gender || '',
+      ageRange: data.ageRange || '',
+      passwordHash,
+      hasPassword,
+      preferredLanguage: data.preferredLanguage || 'km',
+      skinConcerns: data.skinConcerns || [],
+      acneDetails: data.acneDetails || '',
+      role: 'user',
+      points: 0,
+      claimedNewCustomerBonus: false,
+      totalSpent: 0,
+      tier: 'normal',
+      createdAt: new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true })
+      .then(() => console.log("【Firestore】新用户资料异步写入成功！UID:", uid))
+      .catch((dbErr: any) => console.warn("【Firestore】新用户资料写入提示 (非阻塞):", dbErr?.message || dbErr));
 
     // Dual-write to backend server to ensure admin dashboard synchronization
     try {
@@ -408,6 +715,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ageRange: data.ageRange || '',
           skinConcerns: data.skinConcerns || [],
           points: 0,
+          claimedNewCustomerBonus: false,
           tier: 'normal',
           role: 'user',
         }),
@@ -420,15 +728,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Update User Profile
   const updateUserProfile = async (data: Partial<UserProfile>): Promise<void> => {
-    if (!currentUser) throw new Error('អ្នកមិនទាន់បានចូលប្រើប្រាស់ទេ។');
+    const uid = auth.currentUser?.uid || currentUser?.uid || userProfile?.uid;
+    if (!uid && !userProfile) throw new Error('អ្នកមិនទាន់បានចូលប្រើប្រាស់ទេ។');
 
-    const uid = currentUser.uid;
     const { uid: _u, role: _r, phoneNumber: _p, ...allowedUpdates } = data as any;
 
     const updatedProfile = userProfile ? { ...userProfile, ...allowedUpdates } : null;
     if (updatedProfile) {
       saveMockUser(updatedProfile, false);
       setUserProfile(updatedProfile);
+
+      // Direct write to Firestore users collection: doc(db, 'users', auth.currentUser.uid)
+      const targetUid = auth.currentUser?.uid || uid;
+      if (targetUid) {
+        const userRef = doc(db, 'users', targetUid);
+        setDoc(userRef, { ...allowedUpdates, updatedAt: serverTimestamp() }, { merge: true })
+          .catch((dbErr: any) => console.warn('Firestore user update error (non-blocking):', dbErr?.message || dbErr));
+      }
+
+      // Dispatch global event so all components update immediately
+      window.dispatchEvent(new Event('pointsUpdated'));
     }
   };
 
@@ -466,9 +785,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Login with Name / Phone Number + Password / PIN
-  const loginWithPassword = async (identifier: string, password: string): Promise<UserProfile> => {
+  // 【登录姓名校验】客户登录时需要输入电话号码和姓名。系统比对首次创建时保存的姓名与这次登录输入的姓名是否完全一致
+  const loginWithPassword = async (
+    identifier: string,
+    password: string,
+    phoneInput?: string
+  ): Promise<UserProfile> => {
     if (!identifier || !password) {
-      throw new Error('សូមបញ្ចូលឈ្មោះ និងពាក្យសម្ងាត់ ឬលេខ PIN របស់អ្នក។');
+      throw new Error('សូមបញ្ចូលឈ្មោះ និងពាក្យសម្ងាត់ ឬលេខ PIN របស់អ្នក។ (请输入姓名与密码)');
     }
 
     const cleanId = identifier.trim();
@@ -521,110 +845,147 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return adminProfile;
     }
 
-    let profile = await findUserByNameOrPhone(cleanId);
-    
-    if (!profile) {
-      // Check local storage fallback by identifier
-      const localSession = localStorage.getItem(`lumimei_user_profile_${cleanId}`);
-      if (localSession) {
-        try {
-          profile = JSON.parse(localSession);
-        } catch {
-          // ignore
+    // Determine target Phone and Input Name
+    const isIdPhone = isLikelyPhoneNumber(cleanId);
+    let targetPhone = '';
+    let inputName = '';
+
+    if (phoneInput && isLikelyPhoneNumber(phoneInput)) {
+      targetPhone = phoneInput.trim();
+      if (!isIdPhone) {
+        inputName = cleanId;
+      }
+    } else if (isIdPhone) {
+      targetPhone = cleanId;
+      inputName = '';
+    } else {
+      inputName = cleanId;
+      targetPhone = '';
+    }
+
+    let profile: UserProfile | null = null;
+    let verifyPassed = false;
+
+    // 【登录姓名校验】比对首次登记姓名与本次登录姓名（仅在同时提供了电话和姓名且姓名非纯手机号时比对）
+    if (targetPhone && inputName && !isLikelyPhoneNumber(inputName)) {
+      const verifyRes = await verifyCustomerLoginName(targetPhone, inputName);
+      if (!verifyRes.allowed) {
+        if (verifyRes.reason === 'forbidden' || verifyRes.reason === 'server_error') {
+          throw new Error('系统错误，请稍后重试');
         }
+        if (verifyRes.reason === 'name_mismatch') {
+          throw new Error('姓名与注册信息不符,请核实后重试');
+        }
+        if (verifyRes.reason === 'not_found') {
+          throw new Error('未找到该手机号码的客户账户，请核实后重试或前往注册');
+        }
+        throw new Error(verifyRes.errorZh || verifyRes.error || '系统错误，请稍后重试');
+      }
+      profile = verifyRes.user || null;
+      verifyPassed = true;
+    }
+
+    if (!profile) {
+      try {
+        if (targetPhone) {
+          profile = await findUserByPhone(targetPhone);
+        } else {
+          profile = await findUserByNameOrPhone(cleanId);
+        }
+      } catch (findErr: any) {
+        if (findErr?.status === 403 || findErr?.code === 'permission-denied' || String(findErr?.message || '').includes('系统')) {
+          throw new Error('系统错误，请稍后重试');
+        }
+        throw findErr;
       }
     }
 
     if (!profile) {
-      // If profile does not exist yet, auto-create account with name and password/PIN
-      const hashed = await hashPassword(password);
-      const uid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const newProfile: UserProfile = {
-        uid,
-        displayName: cleanId,
-        fullName: cleanId,
-        phoneNumber: cleanId.startsWith('+') || /^\d+$/.test(cleanId) ? cleanId : '',
-        preferredLanguage: 'km',
-        skinConcerns: [],
-        acneDetails: '',
-        role: 'user',
-        points: 0,
-        totalSpent: 0,
-        tier: 'normal',
-        isVip: false,
-        isVvip: false,
-        isFacebookTopFriend: false,
-        consentAccepted: true,
-        consentVersion: '1.0',
-        hasPassword: true,
-        passwordHash: hashed,
-        createdAt: new Date(),
-      };
+      throw new Error(targetPhone ? '未找到该手机号码的客户账户，请核实后重试或前往注册' : '未找到该客户账户，请核实姓名后重试或前往注册');
+    }
 
-      // Save directly to localStorage('app_users')
-      saveMockUser(newProfile, false);
+    // 若此前尚未做过校验，再次核验数据库登记姓名与登录姓名
+    if (inputName && targetPhone && !verifyPassed && !isLikelyPhoneNumber(inputName)) {
+      const candidates = [
+        profile.initialFullName,
+        profile.fullName,
+        profile.displayName,
+        (profile as any).name,
+        (profile as any).telegram,
+      ]
+        .filter(Boolean)
+        .map((n: string) => String(n).trim().toLowerCase());
 
-      // Dual-write to backend server to ensure admin dashboard synchronization
-      try {
-        fetch('/api/admin/users', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: uid,
-            uid,
-            fullName: cleanId,
-            displayName: cleanId,
-            phoneNumber: cleanId.startsWith('+') || /^\d+$/.test(cleanId) ? cleanId : '',
-            points: 0,
-            tier: 'normal',
-            role: 'user',
-          }),
-        }).catch(() => {});
-      } catch {}
+      const normalizeClean = (str: string) => str.toLowerCase().replace(/[\s\-_.,#@]+/g, '');
+      const inLower = inputName.trim().toLowerCase();
+      const inNorm = normalizeClean(inputName);
 
-      localStorage.setItem(`lumimei_user_profile_${cleanId}`, JSON.stringify(newProfile));
-      localStorage.setItem(`lumimei_pwd_${cleanId}`, password);
+      const isNameMatch = candidates.length === 0 || candidates.some((cand) => {
+        const cLower = cand.trim().toLowerCase();
+        const cNorm = normalizeClean(cand);
+        return (
+          cLower === inLower ||
+          cLower.includes(inLower) ||
+          inLower.includes(cLower) ||
+          (inNorm.length >= 2 && (cNorm.includes(inNorm) || inNorm.includes(cNorm)))
+        );
+      });
 
-      const syntheticUser: any = {
-        uid: newProfile.uid,
-        phoneNumber: newProfile.phoneNumber,
-        displayName: newProfile.displayName,
-        photoURL: null,
-        email: null,
-      };
-
-      setCurrentUser(syntheticUser);
-      setUserProfile(newProfile);
-      localStorage.setItem(
-        'lumimei_auth_session',
-        JSON.stringify({ uid: newProfile.uid, phoneNumber: newProfile.phoneNumber })
-      );
-      return newProfile;
+      if (!isNameMatch) {
+        throw new Error('姓名与注册信息不符,请核实后重试');
+      }
     }
 
     // Check if user has set a password/PIN
+    const plainPwd = (profile as any).loginPassword || (profile as any).password || (profile as any).pin;
     if (!profile.passwordHash) {
-      // Check if local password matches (fallback)
-      const localPwd = localStorage.getItem(`lumimei_pwd_${cleanId}`) || (profile.phoneNumber ? localStorage.getItem(`lumimei_pwd_${profile.phoneNumber}`) : null);
-      if (localPwd && localPwd === password) {
-        // Upgrade with hash
+      if (plainPwd && String(plainPwd) === String(password)) {
         const hashed = await hashPassword(password);
         try {
           const userRef = doc(db, 'users', profile.uid);
           await updateDoc(userRef, { passwordHash: hashed, hasPassword: true, updatedAt: serverTimestamp() });
         } catch (err: any) {
-          console.error('Firestore passwordHash update failed in users collection:', err?.message || err);
+          console.warn('Firestore passwordHash upgrade notice:', err?.message || err);
         }
         profile.passwordHash = hashed;
         profile.hasPassword = true;
       } else {
-        throw new Error('គណនីនេះមិនទាន់បានកំណត់ពាក្យសម្ងាត់ទេ។ សូមជ្រើសរើសផ្ទាំង «លេខកូដ OTP» ដើម្បីចូលប្រើប្រាស់។');
+        // Check if local password matches (fallback)
+        const localPwd = localStorage.getItem(`lumimei_pwd_${cleanId}`) || (profile.phoneNumber ? localStorage.getItem(`lumimei_pwd_${profile.phoneNumber}`) : null);
+        if (localPwd && localPwd === password) {
+          // Upgrade with hash
+          const hashed = await hashPassword(password);
+          try {
+            const userRef = doc(db, 'users', profile.uid);
+            await updateDoc(userRef, { passwordHash: hashed, hasPassword: true, updatedAt: serverTimestamp() });
+          } catch (err: any) {
+            console.warn('Firestore passwordHash update notice in users collection:', err?.message || err);
+          }
+          profile.passwordHash = hashed;
+          profile.hasPassword = true;
+        } else {
+          throw new Error('គណនីនេះមិនទាន់បានកំណត់ពាក្យសម្ងាត់ទេ។ សូមជ្រើសរើសផ្ទាំង «លេខកូដ OTP» ដើម្បីចូលប្រើប្រាស់។');
+        }
       }
     } else {
       const hashed = await hashPassword(password);
-      if (profile.passwordHash !== hashed) {
-        throw new Error('ពាក្យសម្ងាត់ ឬលេខ PIN មិនត្រឹមត្រូវទេ។ សូមព្យាយាមម្ដងទៀត។');
+      if (profile.passwordHash !== hashed && (!plainPwd || String(plainPwd) !== String(password))) {
+        throw new Error('ពាក្យសម្ងាត់ ឬលេខ PIN មិនត្រឹមត្រូវទេ។ សូមព្យាយាមម្ដងទៀត។ (密码或PIN不正确)');
       }
+    }
+
+    // 登录后从 Firestore 读取头像及云端资料
+    try {
+      const cloudData = await fetchProfileFromFirestore(profile.uid);
+      if (cloudData) {
+        profile = { ...profile, ...cloudData };
+        if (cloudData.photoURL) {
+          safeSetItem('lumimei_user_photo_url', cloudData.photoURL);
+        }
+        saveMockUser(profile, false);
+      }
+    } catch (cloudErr) {
+      console.warn('【AuthContext】loginWithPassword 读取 Firestore 头像提示:', cloudErr);
     }
 
     const syntheticUser: any = {
@@ -637,13 +998,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setCurrentUser(syntheticUser);
     setUserProfile(profile);
-
-    // Save session in local storage
     localStorage.setItem(
       'lumimei_auth_session',
       JSON.stringify({ uid: profile.uid, phoneNumber: profile.phoneNumber })
     );
-
     return profile;
   };
 
@@ -656,11 +1014,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     telegram?: string;
     gender?: string;
     ageRange?: string;
+    location?: string;
     skinConcerns?: string[];
     acneDetails?: string;
     preferredLanguage?: 'km' | 'zh' | 'en';
   }): Promise<UserProfile> => {
-    const { phoneNumber, password, displayName, fullName, telegram, gender, ageRange, skinConcerns, acneDetails, preferredLanguage } = data;
+    const { phoneNumber, password, displayName, fullName, telegram, gender, ageRange, location, skinConcerns, acneDetails, preferredLanguage } = data;
     
     if (!phoneNumber) throw new Error('សូមបញ្ចូលលេខទូរស័ព្ទរបស់អ្នក។');
     if (!password || password.length < 6) throw new Error('ពាក្យសម្ងាត់ត្រូវមានយ៉ាងហោចណាស់ 6 តួអក្សរ។');
@@ -670,98 +1029,136 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const uid = `user_${Date.now()}_${digits.slice(-6)}`;
     const hashedPassword = await hashPassword(password);
 
-    // Clear old browser storage caches
+    // Initial points for new account is 0 (customer can claim the 15 bonus points in missions)
+    const existing = await findUserByPhone(phoneNumber);
+    const targetUid = existing?.uid || uid;
+    const isAlreadyClaimed = existing?.claimedNewCustomerBonus === true;
+    const currentPoints = typeof existing?.points === 'number' ? existing.points : 0;
+    localStorage.setItem('lumimei_guest_points', currentPoints.toString());
+
+    // Clean up task-new-customer so new user sees "ទទួលយក" and can claim it by themselves
+    let existingCompleted: string[] = [];
+    try {
+      existingCompleted = JSON.parse(localStorage.getItem('lumimei_completed_mission_tasks') || '[]');
+    } catch {}
+    const nextCompletedTasks = isAlreadyClaimed
+      ? Array.from(new Set([...existingCompleted, 'task-new-customer']))
+      : existingCompleted.filter((id) => id !== 'task-new-customer');
+    localStorage.setItem('lumimei_completed_mission_tasks', JSON.stringify(nextCompletedTasks));
+    if (!isAlreadyClaimed) {
+      localStorage.removeItem('lumimei_claimed_new_customer_bonus');
+      localStorage.removeItem(`lumimei_claimed_new_customer_bonus_${targetUid}`);
+    }
+
+    // Clear old browser storage caches but keep clean state
     localStorage.removeItem('lumimei_user_photo_url');
     localStorage.removeItem('lumimei_user_orders');
     localStorage.removeItem('lumimei_is_fb_top_friend');
-    localStorage.removeItem('lumimei_completed_mission_tasks');
-    localStorage.removeItem('lumimei_guest_points');
     localStorage.removeItem('lumimei_quiz_saved_answers');
     localStorage.removeItem('lumimei_quiz_pending_questions');
     localStorage.removeItem('lumimei_quiz_answered_ids');
+    localStorage.removeItem('lumimei_quiz_answered_once_ids');
+
+    const initialFullName = (
+      existing?.initialFullName ||
+      existing?.fullName ||
+      existing?.displayName ||
+      cleanName
+    ).trim();
+    const existingCreatedAt = existing?.createdAt || new Date();
 
     const newProfile: UserProfile = {
-      uid,
+      ...(existing || {}),
+      uid: targetUid,
       displayName: cleanName,
       fullName: cleanName,
+      initialFullName, // 严格保留首次登记姓名
       phoneNumber,
-      telegram: telegram || '',
-      gender: gender || '',
-      ageRange: ageRange || '',
+      telegram: telegram || (existing ? existing.telegram : ''),
+      gender: gender || (existing ? existing.gender : ''),
+      ageRange: ageRange || (existing ? existing.ageRange : ''),
+      location: location || (existing ? existing.location : ''),
       passwordHash: hashedPassword,
       hasPassword: true,
-      preferredLanguage: preferredLanguage || 'km',
-      skinConcerns: skinConcerns || [],
-      acneDetails: acneDetails || '',
-      role: 'user',
-      points: 0, // Initial welcome points (0 pts)
-      totalSpent: 0,
-      tier: 'normal',
-      isVip: false,
-      isVvip: false,
-      isFacebookTopFriend: false,
+      preferredLanguage: preferredLanguage || (existing ? existing.preferredLanguage : 'km'),
+      skinConcerns: skinConcerns || (existing ? existing.skinConcerns : []),
+      acneDetails: acneDetails || (existing ? existing.acneDetails : ''),
+      role: (existing ? existing.role : 'user'),
+      points: currentPoints,
+      claimedNewCustomerBonus: isAlreadyClaimed,
+      totalSpent: existing ? (existing.totalSpent || 0) : 0,
+      tier: existing ? (existing.tier || 'normal') : 'normal',
+      isVip: existing ? Boolean(existing.isVip) : false,
+      isVvip: existing ? Boolean(existing.isVvip) : false,
+      isFacebookTopFriend: existing ? Boolean(existing.isFacebookTopFriend) : false,
       consentAccepted: true,
       consentVersion: '1.0',
-      createdAt: new Date(),
+      createdAt: existingCreatedAt,
+      updatedAt: new Date().toISOString(),
     };
 
     // 1. Save customer profile directly to Firestore using UID as document ID
     try {
-      const userRef = doc(db, 'users', uid);
+      await ensureFirebaseAuth();
+      const userRef = doc(db, 'users', targetUid);
       await setDoc(userRef, {
-        uid,
+        uid: targetUid,
         name: cleanName || "新用户",
         displayName: cleanName,
         fullName: cleanName,
+        initialFullName,
         phoneNumber,
-        telegram: telegram || '',
-        gender: gender || '',
-        ageRange: ageRange || '',
+        telegram: telegram || (existing ? existing.telegram : ''),
+        gender: gender || (existing ? existing.gender : ''),
+        ageRange: ageRange || (existing ? existing.ageRange : ''),
         passwordHash: hashedPassword,
         hasPassword: true,
-        preferredLanguage: preferredLanguage || 'km',
-        skinConcerns: skinConcerns || [],
-        acneDetails: acneDetails || '',
-        role: 'user',
-        points: 0,
-        totalSpent: 0,
-        tier: 'normal',
-        createdAt: new Date().toISOString(),
+        preferredLanguage: preferredLanguage || (existing ? existing.preferredLanguage : 'km'),
+        skinConcerns: skinConcerns || (existing ? existing.skinConcerns : []),
+        acneDetails: acneDetails || (existing ? existing.acneDetails : ''),
+        role: existing ? existing.role : 'user',
+        points: currentPoints,
+        claimedNewCustomerBonus: isAlreadyClaimed,
+        totalSpent: existing ? (existing.totalSpent || 0) : 0,
+        tier: existing ? (existing.tier || 'normal') : 'normal',
+        createdAt: typeof existingCreatedAt === 'string' ? existingCreatedAt : new Date(existingCreatedAt).toISOString(),
         updatedAt: serverTimestamp(),
       }, { merge: true });
-      console.log("【调试】Firestore 数据写入成功！UID:", uid);
     } catch (dbErr: any) {
       console.warn("Firestore 写入提示:", dbErr?.message || dbErr);
     }
 
-    // 2. Save customer profile directly to localStorage('app_users')
+    // 2. Save customer profile directly to localStorage('app_users') (deduplicated by phone)
     saveMockUser(newProfile, false);
 
-    // 2. Dual-write to backend server to ensure admin dashboard synchronization
+    // 3. Dual-write to backend server to ensure admin dashboard synchronization
     try {
       fetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: uid,
-          uid,
+          id: targetUid,
+          uid: targetUid,
           fullName: cleanName,
           displayName: cleanName,
+          initialFullName,
           phoneNumber,
           telegram: telegram || '',
           gender: gender || '',
           ageRange: ageRange || '',
+          location: location || '',
           skinConcerns: skinConcerns || [],
           acneDetails: acneDetails || '',
-          points: 0,
-          tier: 'normal',
+          points: currentPoints,
+          claimedNewCustomerBonus: isAlreadyClaimed,
+          tier: newProfile.tier || 'normal',
           role: 'user',
         }),
       }).catch(() => {});
     } catch {}
 
     const syntheticUser: any = {
-      uid,
+      uid: targetUid,
       phoneNumber,
       displayName: cleanName,
       photoURL: null,
@@ -773,7 +1170,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     localStorage.setItem(
       'lumimei_auth_session',
-      JSON.stringify({ uid, phoneNumber })
+      JSON.stringify({ uid: targetUid, phoneNumber })
     );
 
     return newProfile;
@@ -789,6 +1186,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const hashedPassword = await hashPassword(password);
     try {
+      await ensureFirebaseAuth();
       const userRef = doc(db, 'users', uid);
       const updateData = {
         passwordHash: hashedPassword,
@@ -822,8 +1220,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Reload Profile
   const reloadUserProfile = async (): Promise<void> => {
-    if (currentUser) {
-      const profile = await fetchProfile(currentUser.uid);
+    const uid = currentUser?.uid || auth.currentUser?.uid;
+    if (uid) {
+      try {
+        const cloudData = await fetchProfileFromFirestore(uid);
+        if (cloudData) {
+          if (cloudData.photoURL) {
+            safeSetItem('lumimei_user_photo_url', cloudData.photoURL);
+          }
+          setUserProfile((prev) => {
+            const merged = { ...(prev || { uid }), ...cloudData } as UserProfile;
+            saveMockUser(merged, false);
+            return merged;
+          });
+          return;
+        }
+      } catch (err) {
+        console.warn('【AuthContext】reloadUserProfile 读取 Firestore 失败:', err);
+      }
+      const profile = await fetchProfile(uid);
       setUserProfile(profile);
     }
   };

@@ -850,6 +850,25 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ language }) =>
                       {selectedOrder.customerInfo?.phone}
                     </span>
                   </p>
+                  {selectedOrder.customerInfo?.telegramPhone && (
+                    <p>
+                      <strong className="text-slate-900">Telegram:</strong>{' '}
+                      <span className="font-mono text-blue-700 font-bold">
+                        {selectedOrder.customerInfo.telegramPhone}
+                      </span>
+                    </p>
+                  )}
+                  {selectedOrder.customerInfo?.skinConcern && (
+                    <p>
+                      <strong className="text-slate-900">បញ្ហាស្បែកមុខ:</strong>{' '}
+                      <span className="inline-block px-2 py-0.5 rounded bg-rose-50 text-rose-800 border border-rose-200 font-semibold text-[11px]">
+                        {selectedOrder.customerInfo.skinConcern}
+                        {selectedOrder.customerInfo.skinConcernDetail &&
+                          !selectedOrder.customerInfo.skinConcern.includes(selectedOrder.customerInfo.skinConcernDetail) &&
+                          ` (${selectedOrder.customerInfo.skinConcernDetail})`}
+                      </span>
+                    </p>
+                  )}
                   {(selectedOrder.customerInfo?.notes || selectedOrder.customerInfo?.note) && (
                     <p className="bg-amber-50 p-2.5 rounded-xl border border-amber-200/80 text-amber-950 text-xs mt-2">
                       <strong className="text-amber-900 block mb-0.5">📝 កំណត់សំគាល់អតិថិជន:</strong>

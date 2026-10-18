@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { auth, db } from '../../lib/firebase';
-import { signInAnonymously, getAuth } from 'firebase/auth';
+import { db } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
+import { useAuth } from '../../context/AuthContext';
 import { Phone, Lock, User, Loader2, ArrowRight, ShieldCheck, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 interface SignupProps {
@@ -10,6 +10,7 @@ interface SignupProps {
 }
 
 export const Signup: React.FC<SignupProps> = ({ onSuccess, onNavigateToLogin }) => {
+  const { registerWithPassword } = useAuth();
   const [phoneNumber, setPhoneNumber] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -34,41 +35,22 @@ export const Signup: React.FC<SignupProps> = ({ onSuccess, onNavigateToLogin }) 
     setLoading(true);
 
     try {
-      const auth = getAuth();
-      // 1. 获取当前匿名用户，若没有则登录创建
-      let user = auth.currentUser;
-      if (!user) {
-        const userCredential = await signInAnonymously(auth);
-        user = userCredential.user;
-      }
-
-      // 2. 以手机号为 Doc ID 写入 Firestore
-      const userData = {
-        uid: user.uid,
-        phoneNumber: cleanPhone,
-        password: cleanPassword,
+      const regProfile = await registerWithPassword({
+        displayName: cleanName,
         fullName: cleanName,
-        gender: 'ស្រី',
-        age: '18-24',
-        telegram: '',
-        skinConcerns: [],
-        createdAt: new Date().toISOString()
-      };
+        phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+855${cleanPhone.replace(/^0+/, '')}`,
+        password: cleanPassword,
+        preferredLanguage: 'km',
+      });
 
-      // 本地备份
-      localStorage.setItem("latest_user", JSON.stringify(userData));
-
-      // 使用 merge: true 确保写入成功
-      await setDoc(doc(db, "users", cleanPhone), userData, { merge: true });
-
-      alert(`注册成功！数据已成功存入 Firestore。\n文档 ID: ${cleanPhone}`);
+      alert(`注册成功！数据已成功存入。\nUID: ${regProfile.uid}`);
       setSuccess(true);
 
       if (onSuccess) {
         onSuccess();
       }
     } catch (err: any) {
-      console.error("注册或写入失败:", err);
+      console.error("注册失败:", err);
       alert("操作失败: " + err.message);
       setErrorMessage(err.message || 'ចុះឈ្មោះមិនបានជោគជ័យទេ។');
     } finally {

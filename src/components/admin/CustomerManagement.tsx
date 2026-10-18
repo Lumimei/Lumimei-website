@@ -4,12 +4,17 @@ import {
   db,
   doc,
   setDoc,
+  deleteDoc,
   collection,
   onSnapshot,
   getDocs,
+  query,
+  where,
   serverTimestamp,
   getMockUsers,
   saveMockUser,
+  saveMockUsersBatch,
+  deleteMockUser,
 } from '../../lib/firebase';
 import {
   Users,
@@ -167,6 +172,10 @@ export const CustomerManagement: React.FC<CustomerManagementProps> = ({ language
   const [pointReason, setPointReason] = useState('');
   const [adjustingPoints, setAdjustingPoints] = useState(false);
 
+  // Delete Customer Confirmation Modal State
+  const [customerToDelete, setCustomerToDelete] = useState<CustomerUser | null>(null);
+  const [deletingUser, setDeletingUser] = useState(false);
+
   // Toggle sound setting
   const toggleSound = () => {
     const next = !soundEnabled;
@@ -210,7 +219,7 @@ export const CustomerManagement: React.FC<CustomerManagementProps> = ({ language
       skinConcerns: skinConcernsArr,
       skinConcern: skinConcernsArr.join(', '),
       acneDetails: rawData.acneDetails || '',
-      cityProvince: rawData.cityProvince || '',
+      cityProvince: rawData.location || rawData.cityProvince || '',
       points: typeof rawData.points === 'number' ? rawData.points : 0,
       tier: rawData.tier || 'normal',
       role: rawData.role || 'user',
@@ -291,8 +300,9 @@ export const CustomerManagement: React.FC<CustomerManagementProps> = ({ language
             const data = docSnap.data();
             const customer = parseFirestoreUserDoc(docSnap.id, data);
             fsUsers.push(customer);
-            saveMockUser(customer as any, false);
           });
+          // Batch cache users instead of serializing in a loop
+          saveMockUsersBatch(fsUsers as any);
           fsUsers.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           if (fsUsers.length > 0) {
             setCustomers(fsUsers);
@@ -543,45 +553,89 @@ export const CustomerManagement: React.FC<CustomerManagementProps> = ({ language
     }
   };
 
-  // Handle Delete User
-  const handleDeleteUser = async (userId: string, userName: string) => {
-    const confirmDelete = window.confirm(
-      language === 'zh'
-        ? `确定要删除客户 "${userName}" 的账户吗？`
-        : `តើអ្នកប្រាកដជាចង់លុបគណនីអតិថិជន "${userName}" នេះមែនទេ?`
-    );
-    if (!confirmDelete) return;
+  // Handle Delete User - Opens delete confirmation modal
+  const handleDeleteUser = (customer: CustomerUser) => {
+    setCustomerToDelete(customer);
+  };
+
+  // Confirm and execute customer deletion across Firestore, Backend API, and localStorage
+  const executeDeleteCustomer = async () => {
+    if (!customerToDelete) return;
+    const target = customerToDelete;
+    const targetId = target.id;
+    const targetName = target.fullName || target.displayName || 'អតិថិជន';
+    const targetPhone = target.phoneNumber;
+
+    setDeletingUser(true);
 
     try {
-      const response = await axios.post('/api/admin/users/delete', { userId });
-      if (response.data && response.data.success) {
-        setSuccessMsg(
-          language === 'zh'
-            ? '客户账户已删除'
-            : `បានលុបគណនីអតិថិជន "${userName}" ជោគជ័យ`
-        );
+      // 1. Direct Firestore deletion
+      try {
+        const userRef = doc(db, 'users', targetId);
+        await deleteDoc(userRef);
+      } catch (fsErr) {
+        console.warn('Firestore direct deleteDoc error:', fsErr);
       }
+
+      if (target.uid && target.uid !== targetId) {
+        try {
+          await deleteDoc(doc(db, 'users', target.uid));
+        } catch {}
+      }
+
+      if (targetPhone) {
+        try {
+          const q = query(collection(db, 'users'), where('phoneNumber', '==', targetPhone));
+          const snaps = await getDocs(q);
+          for (const d of snaps.docs) {
+            try {
+              await deleteDoc(d.ref);
+            } catch {}
+          }
+        } catch {}
+      }
+
+      // 2. Call backend server API
+      try {
+        await axios.post('/api/admin/users/delete', {
+          userId: targetId,
+          id: targetId,
+          phone: targetPhone,
+        });
+      } catch (apiErr) {
+        console.warn('Backend API delete notice:', apiErr);
+      }
+
+      // 3. Clean up localStorage mock and app users
+      try {
+        deleteMockUser(targetId);
+      } catch {}
+
+      // 4. Update UI State
+      setCustomers((prev) =>
+        prev.filter(
+          (c) =>
+            c.id !== targetId &&
+            c.uid !== targetId &&
+            (targetPhone ? c.phoneNumber !== targetPhone : true)
+        )
+      );
+
+      if (selectedUserForDetails?.id === targetId) {
+        setSelectedUserForDetails(null);
+      }
+
+      setSuccessMsg(
+        language === 'zh'
+          ? `客户 "${targetName}" 已成功删除！`
+          : `បានលុបគណនីអតិថិជន "${targetName}" ជោគជ័យ!`
+      );
+      setCustomerToDelete(null);
     } catch (err: any) {
-      console.error('Delete user error:', err);
-      alert(err.response?.data?.msg_km || 'មិនអាចលុបគណនីបានទេ');
+      console.error('Delete customer fatal error:', err);
+    } finally {
+      setDeletingUser(false);
     }
-
-    // Clean up local app_users and mock_users if present
-    try {
-      const raw = localStorage.getItem('app_users') || localStorage.getItem('mock_users');
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          const filtered = list.filter((m: any) => m.uid !== userId && m.id !== userId);
-          localStorage.setItem('app_users', JSON.stringify(filtered));
-          localStorage.setItem('mock_users', JSON.stringify(filtered));
-          window.dispatchEvent(new CustomEvent('app_users_updated'));
-          window.dispatchEvent(new CustomEvent('mock_users_updated'));
-        }
-      }
-    } catch {}
-
-    setCustomers((prev) => prev.filter((c) => c.id !== userId));
   };
 
   // Filtered customers
@@ -1159,9 +1213,9 @@ export const CustomerManagement: React.FC<CustomerManagementProps> = ({ language
 
                           <button
                             type="button"
-                            onClick={() => handleDeleteUser(customer.id, customer.fullName)}
-                            className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 transition cursor-pointer"
-                            title="លុបគណនី"
+                            onClick={() => handleDeleteUser(customer)}
+                            className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 border border-rose-200/60 transition active:scale-95 cursor-pointer flex items-center justify-center"
+                            title={language === 'zh' ? '删除此客户账户' : 'លុបគណនីអតិថិជន'}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1688,25 +1742,101 @@ export const CustomerManagement: React.FC<CustomerManagementProps> = ({ language
             </div>
 
             {/* Footer */}
-            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+            <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedUserForPoints(selectedUserForDetails);
+                  const target = selectedUserForDetails;
                   setSelectedUserForDetails(null);
+                  handleDeleteUser(target);
                 }}
-                className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer text-xs"
+                className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer text-xs border border-rose-200/60"
               >
-                <Award className="w-3.5 h-3.5" />
-                <span>កែប្រែពិន្ទុ</span>
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{language === 'zh' ? '删除此客户' : 'លុបគណនី'}</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedUserForPoints(selectedUserForDetails);
+                    setSelectedUserForDetails(null);
+                  }}
+                  className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer text-xs"
+                >
+                  <Award className="w-3.5 h-3.5" />
+                  <span>កែប្រែពិន្ទុ</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedUserForDetails(null)}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold transition cursor-pointer text-xs"
+                >
+                  បិទ
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================= */}
+      {/* POPUP MODAL: DELETE CUSTOMER CONFIRMATION               */}
+      {/* ======================================================= */}
+      {customerToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-rose-100 space-y-4 animate-in zoom-in-95">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0 shadow-xs">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-bold text-slate-900 text-base sm:text-lg font-battambang">
+                  {language === 'zh' ? '确认删除客户账户' : 'តើអ្នកប្រាកដជាចង់លុបគណនីនេះមែនទេ?'}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 font-battambang leading-relaxed">
+                  {language === 'zh'
+                    ? `您确定要删除客户 "${customerToDelete.fullName || customerToDelete.displayName || '客户'}" 的账户吗？此操作将从 Firestore 数据库永久移除该客户数据。`
+                    : `អ្នករៀបនឹងលុបគណនីអតិថិជន "${customerToDelete.fullName || customerToDelete.displayName || 'អតិថិជន'}" នេះ។ ទិន្នន័យនឹងត្រូវលុបចេញពីប្រព័ន្ធទិន្នន័យ Firestore ជាស្ថាពរ។`}
+                </p>
+                {customerToDelete.phoneNumber && (
+                  <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-xl text-xs font-mono text-slate-700 font-bold">
+                    <Phone className="w-3.5 h-3.5 text-slate-500" />
+                    <span>{customerToDelete.phoneNumber}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setCustomerToDelete(null)}
+                disabled={deletingUser}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer text-xs disabled:opacity-50"
+              >
+                {language === 'zh' ? '取消' : 'បោះបង់'}
               </button>
 
               <button
                 type="button"
-                onClick={() => setSelectedUserForDetails(null)}
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold transition cursor-pointer text-xs"
+                onClick={executeDeleteCustomer}
+                disabled={deletingUser}
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer text-xs shadow-md shadow-rose-600/20 active:scale-95 disabled:opacity-50"
               >
-                បិទ
+                {deletingUser ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>{language === 'zh' ? '正在删除...' : 'កំពុងលុប...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>{language === 'zh' ? '确认删除' : 'លុបគណនី'}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

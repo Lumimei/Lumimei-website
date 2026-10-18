@@ -1,285 +1,464 @@
-import React, { useState } from 'react';
-import { X, Sparkles, Loader2, Check, ArrowRight, Bot, RefreshCw } from 'lucide-react';
-import { Product, SkinType, Language } from '../types';
-import { getAllStoredProducts } from '../utils/productManager';
-import { GEMINI_ENABLED } from '../config/appConfig';
+import React, { useState, useMemo } from 'react';
+import {
+  X,
+  Sparkles,
+  Calendar,
+  CheckSquare,
+  Square,
+  ArrowRight,
+  ArrowLeft,
+} from 'lucide-react';
+import { Language, Product } from '../types';
+import {
+  ClosedComedonesAnswers,
+  ClosedComedonesAnalysisResult,
+  EMPTY_CLOSED_COMEDONES_ANSWERS,
+  DEFAULT_CLOSED_COMEDONES_ANSWERS,
+  getActiveComedonesQuestions,
+  evaluateClosedComedonesRuleBased,
+  saveComedonesBaseline,
+  getComedonesBaseline,
+} from '../advisor/closedComedonesAdvisor';
+import { saveSkinAnalysisReport } from '../advisor/skinReportsManager';
+import { ClosedComedonesResultView } from './ClosedComedonesResultView';
 
 interface AISkincareAdvisorModalProps {
   isOpen: boolean;
-  language: Language;
   onClose: () => void;
-  onAddMultipleToCart: (products: Product[]) => void;
-  products?: Product[];
+  language?: Language;
+  onNavigateToAccount?: () => void;
+  onNavigateToFollowUp?: () => void;
+  onAddToCart?: (product: Product, quantity?: number) => void;
+  onSelectProduct?: (product: Product) => void;
 }
 
 export const AISkincareAdvisorModal: React.FC<AISkincareAdvisorModalProps> = ({
   isOpen,
-  language,
   onClose,
-  onAddMultipleToCart,
-  products,
+  language = 'km',
+  onNavigateToAccount,
+  onNavigateToFollowUp,
+  onAddToCart,
+  onSelectProduct,
 }) => {
-  const [step, setStep] = useState<1 | 2>(1);
-  const [skinType, setSkinType] = useState<SkinType>('oily');
-  const [concerns, setConcerns] = useState<string[]>(['acne']);
-  const [budget, setBudget] = useState<string>('budget-friendly');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ routine: string; advice: string } | null>(null);
+  const todayISO = useMemo(() => new Date().toISOString().split('T')[0], []);
+
+  // Form State
+  const [selectedDate, setSelectedDate] = useState<string>(todayISO);
+  const [currentStep, setCurrentStep] = useState<number>(0);
+  const [view, setView] = useState<'questionnaire' | 'result'>('questionnaire');
+
+  // Answers State: starts empty so user chooses their own answers without pre-selected values
+  const [answers, setAnswers] = useState<ClosedComedonesAnswers>(() => EMPTY_CLOSED_COMEDONES_ANSWERS);
+
+  // Evaluated result state
+  const [result, setResult] = useState<ClosedComedonesAnalysisResult | null>(null);
+
+  // Dynamic active questions
+  const activeQuestions = useMemo(() => {
+    return getActiveComedonesQuestions(answers);
+  }, [answers]);
+
+  // When modal is opened fresh, ensure answers start blank and user chooses themselves
+  React.useEffect(() => {
+    if (isOpen) {
+      setAnswers(EMPTY_CLOSED_COMEDONES_ANSWERS);
+      setCurrentStep(0);
+      setView('questionnaire');
+      setResult(null);
+    }
+  }, [isOpen]);
+
+  // Format date to DD/MM/YYYY
+  const formatToDDMMYYYY = (dateStr: string): string => {
+    if (!dateStr) return '04/10/2026';
+    try {
+      const raw = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+      const parts = raw.split('-');
+      if (parts.length === 3) {
+        const y = parts[0];
+        const m = parts[1].padStart(2, '0');
+        const d = parts[2].padStart(2, '0');
+        return `${d}/${m}/${y}`;
+      }
+    } catch {}
+    return dateStr;
+  };
+
+  // Format date in Khmer representation
+  const formatKhmerDate = (dStr: string) => {
+    try {
+      const parts = (dStr || todayISO).split('-');
+      if (parts.length === 3) {
+        const year = parseInt(parts[0], 10);
+        const month = parseInt(parts[1], 10) - 1;
+        const day = parseInt(parts[2], 10);
+
+        const khmerNumbers = ['០', '១', '២', '៣', '៤', '៥', '៦', '៧', '៨', '៩'];
+        const toKhmerNum = (n: number, pad = false) => {
+          const s = pad && n < 10 ? `0${n}` : `${n}`;
+          return s.split('').map((char) => khmerNumbers[parseInt(char, 10)] || char).join('');
+        };
+
+        const khmerMonths = [
+          'មករា', 'កុម្ភៈ', 'មីនា', 'មេសា', 'ឧសភា', 'មិថុនា',
+          'កក្កដា', 'សីហា', 'កញ្ញា', 'តុលា', 'វិច្ឆិកា', 'ធ្នូ',
+        ];
+
+        return `${toKhmerNum(day, true)} ${khmerMonths[month]} ${toKhmerNum(year)}`;
+      }
+    } catch {}
+    return dStr;
+  };
+
+  const totalQuestions = activeQuestions.length;
+  const safeStep = Math.min(currentStep, Math.max(0, totalQuestions - 1));
+  const currentQ = activeQuestions[safeStep];
+  const progressPercent = Math.round(((safeStep + 1) / Math.max(1, totalQuestions)) * 100);
+
+  // Check if current question has an answer chosen by the user
+  const isCurrentAnswered = useMemo(() => {
+    if (!currentQ) return false;
+    const val = answers[currentQ.id];
+    if (currentQ.multiSelect) {
+      return Array.isArray(val) && val.length > 0;
+    }
+    return Boolean(val && typeof val === 'string' && val.trim().length > 0);
+  }, [currentQ, answers]);
+
+  // Toggle multi-select option
+  const handleToggleMulti = (key: keyof ClosedComedonesAnswers, val: string) => {
+    setAnswers((prev) => {
+      const currentList = (prev[key] as string[]) || [];
+      let nextList = [...currentList];
+      if (nextList.includes(val)) {
+        nextList = nextList.filter((item) => item !== val);
+      } else {
+        nextList.push(val);
+      }
+      return {
+        ...prev,
+        [key]: nextList,
+      };
+    });
+  };
+
+  // Handle single select option: clicking selects it (and clicking again toggles off)
+  const handleSelectSingle = (key: keyof ClosedComedonesAnswers, val: string) => {
+    setAnswers((prev) => {
+      const nextVal = prev[key] === val ? '' : val;
+      const nextAnswers: ClosedComedonesAnswers = {
+        ...prev,
+        [key]: nextVal,
+      };
+
+      // If user answers or changes Q5 (q6_trend), ensure Q8 (q8_acne_treatment_feeling) remains compatible
+      if (key === 'q6_trend') {
+        const trend = nextVal;
+        const currentFeeling = nextAnswers.q8_acne_treatment_feeling;
+        if (trend === 'improving') {
+          // In Q8, only effective_comfortable and stings_dry_peeling are allowed
+          if (
+            currentFeeling === 'ineffective' ||
+            currentFeeling === 'acne_increased' ||
+            currentFeeling === 'itchy_rash_burn'
+          ) {
+            nextAnswers.q8_acne_treatment_feeling = '';
+          }
+        } else if (
+          trend === 'stable' ||
+          trend === 'slight_increase' ||
+          trend === 'large_increase' ||
+          trend === 'rapid_spike'
+        ) {
+          // In Q8, only ineffective, acne_increased, and itchy_rash_burn are allowed
+          if (
+            currentFeeling === 'effective_comfortable' ||
+            currentFeeling === 'stings_dry_peeling'
+          ) {
+            nextAnswers.q8_acne_treatment_feeling = '';
+          }
+        }
+      }
+
+      return nextAnswers;
+    });
+  };
+
+  // Submit and evaluate
+  const handleSubmitAndEvaluate = () => {
+    const evaluation = evaluateClosedComedonesRuleBased(answers, (language as Language) || 'km');
+    setResult(evaluation);
+
+    // Save baseline for follow-up and history
+    saveComedonesBaseline(answers, evaluation.analysisObject, selectedDate);
+    saveSkinAnalysisReport(
+      answers,
+      {
+        headline: evaluation.section1_summary?.badgeLabelKm || 'របាយការណ៍វិភាគស្បែកមុខ',
+        summaryParagraph: evaluation.section1_summary?.appearanceTextKm || '',
+        analysisObject: evaluation.analysisObject,
+        severityBadgeColor: evaluation.section1_summary?.badgeColor || 'emerald',
+      },
+      selectedDate
+    );
+
+    setView('result');
+  };
 
   if (!isOpen) return null;
 
-  const catalog = products && products.length > 0 ? products : getAllStoredProducts();
-
-  const skinTypeOptions = [
-    { id: 'oily', labelKm: 'ស្បែកមុខខ្លាញ់ (Oily)', labelEn: 'Oily Skin' },
-    { id: 'dry', labelKm: 'ស្បែកមុខស្ងួត (Dry)', labelEn: 'Dry Skin' },
-    { id: 'sensitive', labelKm: 'ស្បែកស្តើង / ងាយរមាស់ (Sensitive)', labelEn: 'Sensitive' },
-    { id: 'combination', labelKm: 'ស្បែកចម្រុះ (Combination)', labelEn: 'Combination' },
-    { id: 'normal', labelKm: 'ស្បែកធម្មតា (Normal)', labelEn: 'Normal' },
-  ];
-
-  const concernOptions = [
-    { id: 'acne', labelKm: 'ស្បែកមានមុន / ស្នាម', labelEn: 'Acne & Blemishes' },
-    { id: 'hydration', labelKm: 'ខ្វះទឹក / ស្ងួតប្រេះ', labelEn: 'Dehydration & Dryness' },
-    { id: 'brightening', labelKm: 'ស្បែកស្រអាប់ / ស្នាមជាំ', labelEn: 'Dark Spots & Dullness' },
-    { id: 'antiaging', labelKm: 'ស្នាមជ្រួញ / ធ្លាក់ស្បែក', labelEn: 'Fine lines & Anti-aging' },
-    { id: 'sensitive', labelKm: 'ស្បែកក្រហម / អាលែកហ្ស៊ី', labelEn: 'Redness & Irritation' },
-  ];
-
-  const toggleConcern = (id: string) => {
-    if (concerns.includes(id)) {
-      setConcerns(concerns.filter((c) => c !== id));
-    } else {
-      setConcerns([...concerns, id]);
-    }
-  };
-
-  const handleConsult = async () => {
-    setLoading(true);
-    setStep(2);
-
-    if (!GEMINI_ENABLED) {
-      setTimeout(() => {
-        setResult({
-          routine: 'មុខងារវិភាគស្បែកដោយ AI កំពុងត្រូវបានរៀបចំ។ សូមព្យាយាមម្ដងទៀតនៅពេលក្រោយ។',
-          advice: ''
-        });
-        setLoading(false);
-      }, 300);
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/ai-advisor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          skinType,
-          skinConcerns: concerns,
-          budget,
-          language,
-        }),
-      });
-
-      const data = await response.json();
-      setResult(data);
-    } catch {
-      setResult({
-        routine: language === 'km'
-          ? '១. លាងមុខជាមួយ CeraVe Gentle Cleanser\n២. ប្រើតូណឺ Anua Heartleaf 77%\n៣. លាបឡេការពារកំដៅថ្ងៃ Beauty of Joseon'
-          : '1. Cleanse with CeraVe Gentle Cleanser\n2. Tone with Anua Heartleaf 77%\n3. Protect with Beauty of Joseon Sunscreen',
-        advice: language === 'km'
-          ? 'ការថែរក្សាស្បែកទៀងទាត់រៀងរាល់ព្រឹក និងយប់ គឺជាកូនសោសំខាន់សម្រាប់ស្បែកភ្លឺថ្លា។'
-          : 'Consistent skincare every morning and night is key to healthy skin.',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Find matching products from store catalog
-  const recommendedProducts = catalog.filter(
-    (p) => {
-      if (!p) return false;
-      const skinTypes = Array.isArray(p.skinTypes) ? p.skinTypes : [];
-      const skinConcerns = Array.isArray(p.skinConcerns) ? p.skinConcerns : [];
-      return skinTypes.includes('all') || skinTypes.includes(skinType) || (concerns || []).some((c) => skinConcerns.includes(c));
-    }
-  ).slice(0, 3);
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/70 backdrop-blur-xs animate-fade-in overflow-y-auto">
-      <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden my-6 border border-emerald-100 flex flex-col max-h-[90vh]">
-        {/* Header */}
-        <div className="p-5 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in font-battambang">
+      <div className="relative w-full max-w-2xl max-h-[92vh] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-[#2E8B57]/30">
+        {/* ========================================================================= */}
+        {/* 1. TOP HEADER */}
+        {/* ========================================================================= */}
+        <div className="px-4 py-3 sm:px-6 sm:py-4 border-b border-[#2E8B57]/15 bg-gradient-to-r from-[#2E8B57]/10 via-[#2E8B57]/5 to-transparent flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center backdrop-blur-md">
-              <Sparkles className="w-6 h-6 text-yellow-300 animate-spin-slow" />
+            <div className="w-10 h-10 rounded-2xl bg-[#2E8B57] text-white flex items-center justify-center shadow-md shadow-[#2E8B57]/20 shrink-0">
+              <Sparkles className="w-5 h-5 text-yellow-300 animate-pulse" />
             </div>
             <div>
-              <h3 className="font-extrabold text-lg leading-tight font-opensans">
-                {language === 'km' ? 'អ្នកពិគ្រោះស្បែកមុខ AI' : 'AI Skincare Advisor'}
+              <h3 className="font-extrabold text-base sm:text-lg text-[#2E8B57] leading-tight">
+                {language === 'km'
+                  ? 'វិភាគស្បែកមុខដោយឥតគិតថ្លៃ'
+                  : language === 'zh'
+                  ? '免费皮肤分析'
+                  : 'Free Skin Analysis'}
               </h3>
-              <p className="text-xs text-emerald-100">
-                {language === 'km' ? 'វិភាគស្បែក និងណែនាំឈុតថែរក្សាស្បែកផ្ទាល់ខ្លួន' : 'Personalized skin analysis & routine generator'}
+              <p className="text-[11px] sm:text-xs text-slate-500 font-medium">
+                Lumimei វិភាគស្បែកមុខបែបវិទ្យាសាស្ត្រ & ណែនាំរូបមន្តផ្ទាល់ខ្លួន
               </p>
             </div>
           </div>
+
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 text-white/80 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
+            className="p-2 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+            aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1 text-slate-800">
-          {step === 1 ? (
-            <div className="space-y-6">
-              {/* Question 1: Skin Type */}
-              <div className="space-y-2">
-                <label className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 block">
-                  {language === 'km' ? '១. តើស្បែកមុខរបស់អ្នកស្ថិតក្នុងប្រភេទណា?' : '1. What is your skin type?'}
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {skinTypeOptions.map((opt) => (
-                    <button
-                      key={opt.id}
-                      onClick={() => setSkinType(opt.id as SkinType)}
-                      className={`p-3 rounded-2xl border text-xs font-bold transition cursor-pointer text-left ${
-                        skinType === opt.id
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-800 shadow-2xs'
-                          : 'border-slate-200 bg-slate-50/50 hover:border-emerald-300 text-slate-700'
-                      }`}
-                    >
-                      {language === 'km' ? opt.labelKm : opt.labelEn}
-                    </button>
-                  ))}
+        {/* ========================================================================= */}
+        {/* 2. TOP DATE PICKER */}
+        {/* ========================================================================= */}
+        <div className="bg-emerald-50/80 border-b border-emerald-200/80 px-4 py-3 sm:px-6 sm:py-3.5 flex flex-wrap items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[#2E8B57] text-white flex items-center justify-center shadow-xs shrink-0">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-black text-emerald-950 uppercase tracking-wider">
+                  កាលបរិច្ឆេទវិភាគ
+                </span>
+              </div>
+              <p className="text-xs text-slate-700 font-bold">
+                {formatKhmerDate(selectedDate)}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-bold text-slate-700 whitespace-nowrap">
+              ជ្រើសរើសថ្ងៃ៖
+            </label>
+            <div className="relative inline-flex items-center">
+              <div className="bg-white border-2 border-emerald-400 hover:border-emerald-600 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs flex items-center justify-between gap-2.5 min-w-[130px] cursor-pointer transition">
+                <span className="font-mono text-xs font-black text-slate-900 tracking-wide">
+                  {formatToDDMMYYYY(selectedDate)}
+                </span>
+                <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              </div>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="absolute inset-0 opacity-0 w-full h-full cursor-pointer z-10"
+                title="ជ្រើសរើសកាលបរិច្ឆេទវិភាគ"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* 3. MODAL BODY */}
+        {/* ========================================================================= */}
+        <div className="p-4 sm:p-6 overflow-y-auto space-y-5 flex-1 text-slate-800 font-battambang">
+          {view === 'questionnaire' && currentQ ? (
+            <div className="space-y-5">
+              {/* Progress Bar */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-black text-slate-700">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#2E8B57] animate-pulse" />
+                    <span>
+                      សំណួរទី {safeStep + 1} នៃ {totalQuestions}
+                    </span>
+                  </span>
+                  <span className="text-[#2E8B57] bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-200 font-bold">
+                    {progressPercent}%
+                  </span>
+                </div>
+
+                <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                  <div
+                    className="h-full bg-gradient-to-r from-emerald-500 to-[#2E8B57] transition-all duration-300 rounded-full"
+                    style={{ width: `${progressPercent}%` }}
+                  />
                 </div>
               </div>
 
-              {/* Question 2: Skin Concerns */}
-              <div className="space-y-2">
-                <label className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 block">
-                  {language === 'km' ? '២. តើអ្នកមានបញ្ហាស្បែកមុខអ្វីខ្លះ?' : '2. What skin concerns do you have?'}
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {concernOptions.map((c) => {
-                    const isSelected = concerns.includes(c.id);
+              {/* Question Card */}
+              <div className="bg-white p-4 sm:p-5 rounded-3xl border-2 border-emerald-100 shadow-xs space-y-4">
+                <div className="flex items-start gap-3">
+                  <span className="w-8 h-8 rounded-xl bg-[#2E8B57] text-white text-sm font-black flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+                    {safeStep + 1}
+                  </span>
+                  <div className="space-y-1">
+                    <h4 className="text-base sm:text-lg font-black text-slate-900 leading-snug">
+                      {language === 'zh'
+                        ? currentQ.titleZh || currentQ.titleKm
+                        : language === 'en'
+                        ? currentQ.titleEn || currentQ.titleKm
+                        : currentQ.titleKm}
+                    </h4>
+                    {currentQ.subtitleKm && (
+                      <p className="text-xs text-slate-500 font-medium">
+                        {currentQ.subtitleKm}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Options List - Unified format identical to Question 3 (CheckSquare 打钩) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                  {currentQ.options.map((opt) => {
+                    const isMulti = Boolean(currentQ.multiSelect);
+                    const isSelected = isMulti
+                      ? ((answers[currentQ.id] as string[]) || []).includes(opt.value)
+                      : (answers[currentQ.id] as string) === opt.value;
+
+                    const handleClick = () => {
+                      if (isMulti) {
+                        handleToggleMulti(currentQ.id, opt.value);
+                      } else {
+                        handleSelectSingle(currentQ.id, opt.value);
+                      }
+                    };
+
                     return (
-                      <button
-                        key={c.id}
-                        onClick={() => toggleConcern(c.id)}
-                        className={`p-3 rounded-2xl border text-xs font-bold transition cursor-pointer flex items-center justify-between ${
+                      <div
+                        key={opt.value}
+                        onClick={handleClick}
+                        className={`p-3 sm:p-3.5 rounded-2xl border-2 transition cursor-pointer flex items-start gap-3 ${
                           isSelected
-                            ? 'border-emerald-600 bg-emerald-50 text-emerald-800 shadow-2xs'
-                            : 'border-slate-200 bg-slate-50/50 hover:border-emerald-300 text-slate-700'
+                            ? 'border-[#2E8B57] bg-emerald-50/80 shadow-xs'
+                            : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                         }`}
                       >
-                        <span>{language === 'km' ? c.labelKm : c.labelEn}</span>
-                        {isSelected && <Check className="w-4 h-4 text-emerald-600" />}
-                      </button>
+                        <div className="mt-0.5 text-[#2E8B57] shrink-0">
+                          {isSelected ? (
+                            <CheckSquare className="w-5 h-5 fill-emerald-100 text-[#2E8B57]" />
+                          ) : (
+                            <Square className="w-5 h-5 text-slate-300" />
+                          )}
+                        </div>
+                        <span
+                          className={`text-xs sm:text-sm font-black block leading-snug ${
+                            isSelected ? 'text-emerald-950' : 'text-slate-800'
+                          }`}
+                        >
+                          {language === 'zh'
+                            ? opt.labelZh || opt.labelKm
+                            : language === 'en'
+                            ? opt.labelEn || opt.labelKm
+                            : opt.labelKm}
+                        </span>
+                      </div>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Consultation Submit CTA */}
-              <button
-                onClick={handleConsult}
-                className="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Sparkles className="w-5 h-5 text-yellow-200" />
-                <span>
-                  {language === 'km' ? 'វិភាគស្បែក និងបង្កើតឈុតសម្រាប់ខ្ញុំ' : 'Analyze Skin & Recommend Routine'}
-                </span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
+              {/* Navigation buttons */}
+              <div className="flex items-center justify-between gap-3 pt-2">
+                {safeStep > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep((prev) => Math.max(0, prev - 1))}
+                    className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs sm:text-sm transition cursor-pointer"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    <span>ត្រឡប់ក្រោយ</span>
+                  </button>
+                ) : (
+                  <div />
+                )}
+
+                {safeStep < totalQuestions - 1 ? (
+                  <button
+                    type="button"
+                    disabled={!isCurrentAnswered}
+                    onClick={() => {
+                      if (isCurrentAnswered) {
+                        setCurrentStep((prev) => Math.min(totalQuestions - 1, prev + 1));
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 px-6 py-2.5 rounded-2xl font-extrabold text-xs sm:text-sm shadow-md transition ${
+                      isCurrentAnswered
+                        ? 'bg-[#2E8B57] hover:bg-[#257347] text-white cursor-pointer hover:shadow-lg'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    <span>សំណួរបន្ទាប់</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!isCurrentAnswered}
+                    onClick={() => {
+                      if (isCurrentAnswered) {
+                        handleSubmitAndEvaluate();
+                      }
+                    }}
+                    className={`flex items-center gap-2 px-6 sm:px-8 py-3 rounded-2xl font-black text-sm sm:text-base shadow-lg transition ${
+                      isCurrentAnswered
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white cursor-pointer animate-pulse hover:shadow-xl'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    <Sparkles className="w-5 h-5 text-yellow-300" />
+                    <span>មើលលទ្ធផលវិភាគ</span>
+                  </button>
+                )}
+              </div>
             </div>
-          ) : (
-            <div className="space-y-6">
-              {loading ? (
-                <div className="py-12 flex flex-col items-center justify-center text-center space-y-3">
-                  <div className="w-16 h-16 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                    <Loader2 className="w-8 h-8 animate-spin" />
-                  </div>
-                  <h4 className="font-bold text-slate-800">
-                    {language === 'km' ? 'AI កំពុងវិភាគស្បែកមុខរបស់អ្នក...' : 'AI is analyzing your skin profile...'}
-                  </h4>
-                  <p className="text-xs text-slate-500 max-w-xs">
-                    {language === 'km'
-                      ? 'កំពុងជ្រើសរើសរូបមន្ត និងផលិតផលដែលសមស្របបំផុតពី Lumimei'
-                      : 'Searching ingredients tailored to your specific skin needs'}
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-5 animate-fade-in">
-                  {/* AI Output Card */}
-                  <div className="p-4 bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-100/50 rounded-2xl border border-emerald-200 shadow-xs space-y-3">
-                    <div className="flex items-center gap-2 text-emerald-800 font-bold text-xs uppercase tracking-wider">
-                      <Bot className="w-4 h-4 text-emerald-600" />
-                      <span>{language === 'km' ? 'ការណែនាំពី AI Skincare Specialist' : 'AI Specialist Recommendation'}</span>
-                    </div>
-
-                    <div className="text-xs sm:text-sm leading-relaxed text-slate-800 whitespace-pre-line font-opensans">
-                      {result?.routine}
-                    </div>
-
-                    {result?.advice && (
-                      <div className="text-xs p-3 bg-white/80 rounded-xl border border-emerald-100 text-slate-700 font-sans italic">
-                        💡 {result.advice}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Matching Catalog Products */}
-                  <div className="space-y-3">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      {language === 'km' ? 'ផលិតផលសមស្របដែលមានក្នុងហាង Lumimei' : 'Recommended Store Products'}
-                    </h4>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      {recommendedProducts.map((prod) => (
-                        <div key={prod.id} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col justify-between">
-                          <img src={prod.image} alt={prod.name} className="w-full aspect-square object-cover rounded-xl mb-2" referrerPolicy="no-referrer" />
-                          <div>
-                            <p className="text-[10px] font-bold text-emerald-700">{prod.brand}</p>
-                            <h5 className="text-xs font-bold text-slate-800 line-clamp-1">{language === 'km' ? prod.nameKm : prod.name}</h5>
-                            <p className="text-xs font-extrabold text-slate-900 mt-1">${prod.priceUsd.toFixed(2)}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        onAddMultipleToCart(recommendedProducts);
-                        onClose();
-                      }}
-                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-2xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <span>
-                        {language === 'km' ? 'បន្ថែមឈុតទាំងនេះចូលក្នុងកន្ត្រក' : 'Add Entire Routine to Cart'}
-                      </span>
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Reset Advisor */}
-                  <div className="text-center">
-                    <button
-                      onClick={() => setStep(1)}
-                      className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-emerald-700 font-medium"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>{language === 'km' ? 'ធ្វើការវិភាគស្បែកឡើងវិញ' : 'Start Over'}</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          ) : view === 'result' && result ? (
+            <ClosedComedonesResultView
+              result={result}
+              language={language}
+              onRetake={() => {
+                setView('questionnaire');
+                setCurrentStep(0);
+              }}
+              onNavigateToFollowUp={() => {
+                onClose();
+                if (onNavigateToFollowUp) {
+                  onNavigateToFollowUp();
+                } else if (onNavigateToAccount) {
+                  onNavigateToAccount();
+                }
+              }}
+              onAddToCart={onAddToCart}
+              onSelectProduct={onSelectProduct}
+            />
+          ) : null}
         </div>
       </div>
     </div>

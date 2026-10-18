@@ -20,9 +20,12 @@ export function formatTelegramInvoice(order: Order, _isPaid = true, _hasReceipt 
 
   const nowStr = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
+  const telegramPhone = order.customerInfo.telegramPhone ? `✈️ Telegram: ${order.customerInfo.telegramPhone}\n` : '';
+  const skinConcernText = order.customerInfo.skinConcern ? `🌸 បញ្ហាស្បែកមុខ: ${order.customerInfo.skinConcern}\n` : '';
+
   return `👤 ឈ្មោះ៖ ${order.customerInfo.fullName}
 📞 លេខទូរស័ព្ទ៖ ${order.customerInfo.phone}
-
+${telegramPhone}${skinConcernText}
 📍 ទីតាំង៖ ${fullAddress}
 
 🛍️ ទំនិញដែលបានទិញ៖

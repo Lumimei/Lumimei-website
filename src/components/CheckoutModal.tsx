@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, MapPin, CreditCard, QrCode, Phone, Truck, ShieldCheck, ArrowRight, Check } from 'lucide-react';
 import { CartItem, PaymentMethod, OrderCustomerInfo, Language } from '../types';
 import { KHR_RATE } from '../data/products';
+import { useAuth } from '../context/AuthContext';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -333,6 +334,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   onSubmitOrder,
 }) => {
   const [step, setStep] = useState<1 | 2>(1);
+  const { userProfile } = useAuth();
+
   const [customerInfo, setCustomerInfo] = useState<OrderCustomerInfo>({
     fullName: '',
     phone: '',
@@ -344,6 +347,17 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     notes: '',
   });
 
+  useEffect(() => {
+    if (userProfile && isOpen) {
+      setCustomerInfo((prev) => ({
+        ...prev,
+        fullName: prev.fullName || userProfile.fullName || userProfile.displayName || '',
+        phone: prev.phone || userProfile.phoneNumber || '',
+        telegramPhone: prev.telegramPhone || (userProfile as any).telegram || '',
+      }));
+    }
+  }, [userProfile, isOpen]);
+
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('khqr');
 
   if (!isOpen) return null;
@@ -353,11 +367,45 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customerInfo.fullName || !customerInfo.phone || !customerInfo.districtSangkat) {
-      alert(language === 'km' ? 'សូមបំពេញព័ត៌មានអាសយដ្ឋាន និងលេខទូរស័ព្ទឲ្យបានគ្រប់គ្រាន់' : 'Please fill in required customer details');
+    if (
+      !customerInfo.fullName?.trim() ||
+      !customerInfo.phone?.trim() ||
+      !customerInfo.telegramPhone?.trim() ||
+      !customerInfo.districtSangkat
+    ) {
+      alert(
+        language === 'km'
+          ? 'សូមបំពេញព័ត៌មានចាំបាច់៖ ឈ្មោះ លេខទូរស័ព្ទ លេខ Telegram ឬឈ្មោះតេឡេក្រាម និងអាសយដ្ឋានដឹកជញ្ជូនឲ្យបានគ្រប់គ្រាន់!'
+          : language === 'zh'
+          ? '请完整填写必填信息：收件人、电话号码、Telegram以及送货地址！'
+          : 'Please fill in all required customer details including Telegram and shipping address!'
+      );
       return;
     }
-    onSubmitOrder(customerInfo, paymentMethod);
+
+    if (
+      (customerInfo.skinConcern === 'មុខមុន' || customerInfo.skinConcern === 'ផ្សេងៗ') &&
+      !customerInfo.skinConcernDetail?.trim()
+    ) {
+      alert(
+        customerInfo.skinConcern === 'មុខមុន'
+          ? (language === 'km' ? 'សូមបំពេញព័ត៌មានលម្អិតអំពីបញ្ហាមុខមុនរបស់អ្នក!' : 'Please specify details about your acne!')
+          : (language === 'km' ? 'សូមបញ្ជាក់អំពីបញ្ហាស្បែកមុខផ្សេងៗរបស់អ្នក!' : 'Please specify your other skin concern!')
+      );
+      return;
+    }
+
+    const finalCustomerInfo: OrderCustomerInfo = {
+      ...customerInfo,
+      skinConcern: customerInfo.skinConcern
+        ? (customerInfo.skinConcernDetail?.trim()
+            ? `${customerInfo.skinConcern} (${customerInfo.skinConcernDetail.trim()})`
+            : customerInfo.skinConcern)
+        : '',
+      skinConcernDetail: customerInfo.skinConcernDetail?.trim() || '',
+    };
+
+    onSubmitOrder(finalCustomerInfo, paymentMethod);
   };
 
   return (
@@ -421,11 +469,12 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
               <div>
                 <label className="block text-slate-700 font-bold mb-1">
-                  {language === 'km' ? 'លេខ Telegram ឬ ឈ្មោះតេឡេក្រាម' : 'Telegram / User ID'}
+                  {language === 'km' ? 'លេខ Telegram ឬ ឈ្មោះតេឡេក្រាម' : language === 'zh' ? 'Telegram 号码或用户名' : 'Telegram / User ID'} *
                 </label>
                 <input
                   type="text"
-                  placeholder={language === 'km' ? '@username ឬ 012 345 678' : '@username or phone'}
+                  required
+                  placeholder={language === 'km' ? 'ឧទាហរណ៍៖ @username ឬ 012 345 678' : language === 'zh' ? '例如：@username 或 012 345 678' : 'e.g. @username or 012 345 678'}
                   value={customerInfo.telegramPhone || ''}
                   onChange={(e) => setCustomerInfo({ ...customerInfo, telegramPhone: e.target.value })}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -434,23 +483,51 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
               <div>
                 <label className="block text-slate-700 font-bold mb-1">
-                  {language === 'km' ? 'បញ្ហាស្បែកមុខ (Skin Concern)' : 'Skin Concern'}
+                  {language === 'km' ? 'បញ្ហាស្បែកមុខ' : language === 'zh' ? '皮肤问题' : 'Skin Concern'}
                 </label>
                 <select
                   value={customerInfo.skinConcern || ''}
-                  onChange={(e) => setCustomerInfo({ ...customerInfo, skinConcern: e.target.value })}
+                  onChange={(e) =>
+                    setCustomerInfo({
+                      ...customerInfo,
+                      skinConcern: e.target.value,
+                      skinConcernDetail: '',
+                    })
+                  }
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium cursor-pointer"
                 >
-                  <option value="">{language === 'km' ? '-- ជ្រើសរើសបញ្ហាស្បែកមុខ --' : '-- Select Skin Concern --'}</option>
-                  <option value="មុន & រលាក (Acne / Breakouts)">មុន & រលាក (Acne / Breakouts)</option>
-                  <option value="ជាំ & អាចម៍រុយ (Melasma / Dark Spots)">ជាំ & អាចម៍រុយ (Melasma / Dark Spots)</option>
-                  <option value="ស្បែកស្ងួត & ខ្សោះជាតិទឹក (Dry / Dehydrated)">ស្បែកស្ងួត & ខ្សោះជាតិទឹក (Dry / Dehydrated)</option>
-                  <option value="ស្បែកមុខខ្លាញ់ (Oily Skin)">ស្បែកមុខខ្លាញ់ (Oily Skin)</option>
-                  <option value="ស្បែកងាយប្រតិកម្ម & រោល (Sensitive / Redness)">ស្បែកងាយប្រតិកម្ម & រោល (Sensitive / Redness)</option>
-                  <option value="ភាពចាស់ & ស្នាមជ្រួញ (Aging / Anti-Wrinkle)">ភាពចាស់ & ស្នាមជ្រួញ (Aging / Anti-Wrinkle)</option>
-                  <option value="ស្បែកស្រអាប់ ត្រូវការធ្វើឲ្យភ្លឺ (Dullness / Brightening)">ស្បែកស្រអាប់ ត្រូវការធ្វើឲ្យភ្លឺ (Dullness / Brightening)</option>
-                  <option value="ស្បែកធម្មតា / គ្មានបញ្ហា (Normal)">ស្បែកធម្មតា / គ្មានបញ្ហា (Normal)</option>
+                  <option value="">{language === 'km' ? '-- ជ្រើសរើសបញ្ហាស្បែកមុខ --' : language === 'zh' ? '-- 请选择皮肤问题 --' : '-- Select Skin Concern --'}</option>
+                  <option value="មុខមុន">មុខមុន</option>
+                  <option value="មុខខ្មៅស្រអាប់">មុខខ្មៅស្រអាប់</option>
+                  <option value="មុខមានរន្ធញើសធំ">មុខមានរន្ធញើសធំ</option>
+                  <option value="មុខរោល">មុខរោល</option>
+                  <option value="មុខរលាក">មុខរលាក</option>
+                  <option value="ផ្សេងៗ">ផ្សេងៗ</option>
                 </select>
+
+                {/* Input field when មុខមុន or ផ្សេងៗ is selected */}
+                {(customerInfo.skinConcern === 'មុខមុន' || customerInfo.skinConcern === 'ផ្សេងៗ') && (
+                  <div className="mt-2.5 animate-fade-in bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200">
+                    <label className="block text-[11px] font-bold text-emerald-900 mb-1">
+                      {customerInfo.skinConcern === 'មុខមុន'
+                        ? (language === 'km' ? 'បញ្ជាក់ព័ត៌មានលម្អិតអំពីមុខមុន' : language === 'zh' ? '请填写痘痘具体情况' : 'Acne Details / Type')
+                        : (language === 'km' ? 'សូមបញ្ជាក់អំពីបញ្ហាស្បែកមុខផ្សេងៗ' : language === 'zh' ? '请注明其他皮肤问题' : 'Specify Other Skin Concern')
+                      } *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder={
+                        customerInfo.skinConcern === 'មុខមុន'
+                          ? (language === 'km' ? 'ឧទាហរណ៍៖ មុនក្បាលខ្មៅ មុនរលាក មុនកប់ មុនសាច់...' : language === 'zh' ? '例如：黑头、发炎红肿痘、闭口粉刺等' : 'e.g. Blackheads, cystic acne, inflamed breakouts...')
+                          : (language === 'km' ? 'ឧទាហរណ៍៖ ស្បែកមុខស្ងួតខ្លាំង អាចម៍រុយ ជាំ...' : language === 'zh' ? '例如：极度干燥脱皮、色斑、黄褐斑等' : 'e.g. Very dry, melasma, dark spots...')
+                      }
+                      value={customerInfo.skinConcernDetail || ''}
+                      onChange={(e) => setCustomerInfo({ ...customerInfo, skinConcernDetail: e.target.value })}
+                      className="w-full p-2 bg-white border border-emerald-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs text-slate-800 placeholder:text-slate-400 font-medium"
+                    />
+                  </div>
+                )}
               </div>
 
               <div>

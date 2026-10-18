@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../../context/AuthContext';
-import { maskPhoneNumber } from '../../lib/firebase';
+import { auth, db, maskPhoneNumber, safeSetItem, ensureFirebaseAuth } from '../../lib/firebase';
+import { compressImageFile } from '../../utils/imageCompress';
+import { runWithLoading } from '../../utils/asyncUtils';
 import { Order } from '../../types';
 import { GreenDiamondIcon } from '../GreenDiamondIcon';
 import { FacebookIconBadge } from '../FacebookIconBadge';
@@ -33,14 +36,25 @@ import {
   Truck,
   Heart,
   PartyPopper,
+  Activity,
+  FileText,
+  ScanFace,
+  CalendarCheck,
+  ArrowLeft,
+  SlidersHorizontal,
 } from 'lucide-react';
+import {
+  getComedonesBaseline,
+} from '../../advisor/closedComedonesAdvisor';
+import { getAllStoredProducts } from '../../utils/productManager';
+import { SkinFollowUpView } from '../SkinFollowUpView';
+import { SkinReportsHistoryView } from '../SkinReportsHistoryView';
 
 interface DashboardProps {
-  onOpenAiAdvisor: () => void;
+  onOpenAiAdvisor?: () => void;
   onNavigateToAccount: () => void;
   onLogoutSuccess: () => void;
   onOpenPoints?: () => void;
-  onOpenSkinScan?: () => void;
   onNavigateToAdmin?: () => void;
 }
 
@@ -49,7 +63,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onNavigateToAccount,
   onLogoutSuccess,
   onOpenPoints,
-  onOpenSkinScan,
   onNavigateToAdmin,
 }) => {
   const { currentUser, userProfile, updateUserProfile, logout } = useAuth();
@@ -57,6 +70,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [activeModal, setActiveModal] = useState<
     'skincare' | 'orders' | 'benefits' | 'referral' | 'tier' | 'checkin' | null
   >(null);
+  const [skinAnalysisSubView, setSkinAnalysisSubView] = useState<'followup' | 'report'>('followup');
 
   // Referral code state
   const [copiedLink, setCopiedLink] = useState(false);
@@ -119,7 +133,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return () => window.removeEventListener('ordersUpdated', loadOrders);
   }, []);
 
-  const points = userProfile?.points !== undefined ? userProfile.points : guestPoints;
+  const points =
+    userProfile?.points !== undefined
+      ? userProfile.points > 0
+        ? userProfile.points
+        : (!userProfile.totalSpent || userProfile.totalSpent === 0)
+        ? 15
+        : (userProfile.points || 0)
+      : guestPoints;
   const totalSpentFromOrders = userOrders.reduce((sum, order) => sum + (order.totalUsd || 0), 0);
   const totalSpent = userProfile?.totalSpent !== undefined ? userProfile.totalSpent : totalSpentFromOrders;
 
@@ -156,6 +177,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return (
       userProfile?.photoURL ||
       currentUser?.photoURL ||
+      localStorage.getItem('lumimei_user_photo_url') ||
       ''
     );
   });
@@ -168,30 +190,73 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [userProfile, currentUser]);
 
-  const handlePhotoUpload = (file: File) => {
+  // 登录后直接从 Firestore users/{targetUid} 读取头像和昵称
+  useEffect(() => {
+    const targetUid = auth.currentUser?.uid || currentUser?.uid;
+    if (targetUid) {
+      getDoc(doc(db, 'users', targetUid))
+        .then((snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data?.photoURL) {
+              setProfilePhoto(data.photoURL);
+              safeSetItem('lumimei_user_photo_url', data.photoURL);
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [currentUser]);
+
+  const [photoLoading, setPhotoLoading] = useState(false);
+
+  const handlePhotoUpload = async (file: File) => {
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      showToast('សូមជ្រើសរើសរូបភាពដែលមានទំហំតូចជាង 5MB');
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('សូមជ្រើសរើសរូបភាពដែលមានទំហំតូចជាង 10MB');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const dataUrl = e.target?.result as string;
-      if (dataUrl) {
-        setProfilePhoto(dataUrl);
-        localStorage.setItem('lumimei_user_photo_url', dataUrl);
-        window.dispatchEvent(new Event('photoUpdated'));
-        if (currentUser && userProfile) {
-          try {
-            await updateUserProfile({ photoURL: dataUrl });
-          } catch (err) {
-            console.error(err);
+
+    const targetUid = auth.currentUser?.uid || currentUser?.uid;
+
+    await runWithLoading(
+      async () => {
+        // 1. 头像上传前压缩到 256x256、JPEG 质量 0.7，控制在 100KB 以内
+        const dataUrl = await compressImageFile(file, 256, 256, 0.7);
+        if (dataUrl) {
+          await ensureFirebaseAuth();
+          // 2. 保存到 users/{auth.currentUser.uid}，用 setDoc(..., { merge: true })
+          if (targetUid) {
+            const userRef = doc(db, 'users', targetUid);
+            await setDoc(userRef, { photoURL: dataUrl, updatedAt: serverTimestamp() }, { merge: true });
           }
+
+          setProfilePhoto(dataUrl);
+          safeSetItem('lumimei_user_photo_url', dataUrl);
+          window.dispatchEvent(new Event('photoUpdated'));
+
+          if (currentUser && userProfile) {
+            try {
+              await updateUserProfile({ photoURL: dataUrl });
+            } catch (err) {
+              console.error(err);
+            }
+          }
+
+          // 3. 保存成功后才显示 "រក្សាទុកបានជោគជ័យ"
+          showToast('រក្សាទុកបានជោគជ័យ');
         }
-        showToast('បានផ្លាស់ប្ដូររូប Profile រួចរាល់!');
+      },
+      setPhotoLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.error('Failed to compress or save profile photo:', err);
+          showToast(err?.friendlyKm || err?.message || 'មិនអាចរក្សាទុករូបភាពបានទេ។ សូមព្យាយាមម្ដងទៀត។');
+        },
       }
-    };
-    reader.readAsDataURL(file);
+    );
   };
 
   // Format customer's registration date in Khmer
@@ -344,96 +409,113 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       )}
 
-      {/* ផ្នែកព័ត៌មានអតិថិជន (Customer Information Section) */}
-      <div className="bg-gradient-to-br from-emerald-900 via-teal-900 to-slate-900 text-white rounded-3xl p-6 sm:p-7 shadow-xl relative overflow-hidden border border-emerald-500/30 font-battambang">
-        {/* Background decorative glows */}
-        <div className="absolute -top-12 -right-12 w-48 h-48 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
-        <div className="absolute -bottom-12 -left-12 w-48 h-48 bg-amber-500/10 rounded-full blur-2xl pointer-events-none" />
+      {/* ផ្នែកព័ត៌មានអតិថិជន (Customer Information Section - 长方形卡片) */}
+      <div className="bg-[#FFFFFF] text-[#2E8B57] rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-md relative overflow-hidden border border-[#2E8B57]/20 font-battambang">
+        {/* Background subtle decorative accents */}
+        <div className="absolute -top-12 -right-12 w-48 h-48 bg-[#2E8B57]/5 rounded-full blur-2xl pointer-events-none" />
+        <div className="absolute -bottom-12 -left-12 w-48 h-48 bg-[#FF7F50]/5 rounded-full blur-2xl pointer-events-none" />
 
-
-
-        {/* Customer Identity Stack: Profile Picture ABOVE Name */}
-        <div className="flex flex-col items-center text-center space-y-3 relative z-10">
+        {/* Customer Identity Stack: Horizontal Rectangle Layout with 2 rows */}
+        <div className="relative z-10 space-y-2">
           
-          {/* 1. រូប Profile នៅលើឈ្មោះអតិថិជន */}
-          <div className="flex flex-col items-center">
-            <div
-              className="relative cursor-pointer group"
-              onClick={onNavigateToAccount}
-              title="ចូលទៅកាន់ការកំណត់ដើម្បីប្តូររូប Profile"
-            >
-              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-gradient-to-tr from-amber-400 via-emerald-400 to-teal-300 p-1 shadow-xl overflow-hidden relative">
-                {profilePhoto ? (
-                  <img
-                    src={profilePhoto}
-                    alt={displayName}
-                    className="w-full h-full object-cover rounded-full"
-                  />
-                ) : (
-                  <div className="w-full h-full bg-slate-950 rounded-full flex items-center justify-center text-amber-300 font-black text-3xl sm:text-4xl shadow-inner">
-                    {displayName.charAt(0).toUpperCase()}
-                  </div>
-                )}
+          {/* Row 1: Left: Avatar + Name + Badges | Right: Points */}
+          <div className="flex items-center justify-between gap-3 sm:gap-6">
+            <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+              {/* 1. រូប Profile */}
+              <div
+                className="relative cursor-pointer group shrink-0"
+                onClick={onNavigateToAccount}
+                title="ប្តូររូប Profile"
+              >
+                <div
+                  className="w-[35px] h-[35px] rounded-full bg-[#FFFFFF] border-2 border-[#FF7F50] p-0.5 shadow-xs overflow-hidden relative shrink-0 flex items-center justify-center"
+                  style={{ width: '35px', height: '35px' }}
+                >
+                  {profilePhoto ? (
+                    <img
+                      src={profilePhoto}
+                      alt={displayName}
+                      className="w-full h-full object-cover rounded-full"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-[#FFFFFF] rounded-full flex items-center justify-center text-[#FF7F50] font-black text-sm">
+                      {displayName.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 2. ឈ្មោះអតិថិជន & កម្រិតសមាជិក */}
+              <div className="min-w-0 space-y-0.5">
+                <h1 className="text-base sm:text-xl font-extrabold text-[#2E8B57] tracking-wide leading-tight truncate">
+                  {displayName}
+                </h1>
+
+                {/* កម្រិតសមាជិក នៅខាងក្រោមឈ្មោះអតិថិជន */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {isVvip ? (
+                    <span className="inline-flex items-center gap-1 bg-[#FFFFFF] text-[#2E8B57] px-2 py-0.5 rounded-lg border border-[#2E8B57]/30 text-[10px] font-bold shadow-2xs" title="កម្រិត VVIP">
+                      <span className="inline-flex items-center justify-center gap-0.5" style={{ width: '25px', height: '15px' }}>
+                        <GreenDiamondIcon size={12} />
+                        <GreenDiamondIcon size={12} />
+                      </span>
+                      <span className="text-[#2E8B57]">កម្រិត VVIP</span>
+                    </span>
+                  ) : isVip ? (
+                    <span className="inline-flex items-center gap-1 bg-[#FFFFFF] text-[#2E8B57] px-2 py-0.5 rounded-lg border border-[#2E8B57]/30 text-[10px] font-bold shadow-2xs" title="កម្រិត VIP">
+                      <GreenDiamondIcon size={13} />
+                      <span className="text-[#2E8B57]">កម្រិត VIP</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 bg-[#FFFFFF] text-[#2E8B57] px-2 py-0.5 rounded-lg border border-[#2E8B57]/30 text-[10px] font-bold shadow-2xs" title="សមាជិកធម្មតា">
+                      <span className="text-[#2E8B57] text-xs">⭐</span>
+                      <span className="text-[#2E8B57]">សមាជិកធម្មតា</span>
+                    </span>
+                  )}
+
+                  {/* Facebook Top Friends Icon Badge */}
+                  {isFacebookTopFriend && (
+                    <FacebookIconBadge size={18} title="Facebook Top Friends" />
+                  )}
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* 2. ឈ្មោះអតិថិជន ( Customer Name below profile photo ) */}
-          <div className="space-y-1.5 pt-0.5">
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-wide">
-              {displayName}
-            </h1>
-
-            {/* រូបសញ្ញាសំគាល់កម្រិតត្បូងពេជ្រ នៅក្រោមឈ្មោះរបស់អតិថិជន */}
-            <div className="flex items-center justify-center gap-2 flex-wrap pt-0.5">
-              {isVvip ? (
-                <span className="inline-flex items-center gap-1 filter drop-shadow-md" title="កម្រិត VVIP">
-                  <GreenDiamondIcon size={20} />
-                  <GreenDiamondIcon size={20} />
-                </span>
-              ) : isVip ? (
-                <span className="inline-flex items-center filter drop-shadow-md" title="កម្រិត VIP">
-                  <GreenDiamondIcon size={22} />
-                </span>
-              ) : (
-                <span className="text-amber-300 text-base" title="សមាជិកធម្មតា">
-                  ⭐
-                </span>
-              )}
-
-              {/* Facebook Top Friends Icon Badge (Shown if user is Facebook Top Fan / Supporter) */}
-              {isFacebookTopFriend && (
-                <FacebookIconBadge size={22} title="Facebook Top Friends" />
-              )}
-            </div>
-
-            {/* 3. ចំនួនពិន្ទុ (នៅក្រោមឈ្មោះ និងកម្រិតត្បូងពេជ្រ) */}
-            <div className="my-1">
+            {/* Right: Points */}
+            <div className="flex flex-col items-end justify-center shrink-0 text-right">
+              {/* ចំនួនពិន្ទុ */}
               <span
-                className="bg-amber-400/20 text-amber-300 px-3.5 py-1 rounded-xl font-black border border-amber-400/30 leading-tight inline-block shadow-sm"
-                style={{ fontSize: '29px' }}
+                className="bg-[#FFFFFF] text-[#FF7F50] px-3.5 py-1.5 rounded-xl font-black border border-[#FF7F50]/40 leading-tight inline-block shadow-2xs"
+                style={{ fontSize: '14px', color: '#FF7F50' }}
               >
                 {points} ពិន្ទុ
               </span>
             </div>
+          </div>
 
-            {/* 4. ចំនួនទឹកលុយដែលបានចាយសរុប នៅក្រោមពិន្ទុរបស់ខ្ញុំ */}
-            <div className="pt-0.5 pb-1">
-              <span className="inline-flex items-center gap-1.5 bg-emerald-950/70 text-emerald-100 px-3.5 py-1.5 rounded-xl border border-emerald-400/30 shadow-xs text-xs font-semibold">
-                <span>ទឹកប្រាក់បានចាយសរុប៖</span>
-                <span className="text-amber-300 font-extrabold text-sm font-mono tracking-wide">
+          {/* Row 2: នៅខាងក្រោមរូប profile នៅជួរមួយទៀត (ទឹកប្រាក់បានចាយសរុប & កាលបរិច្ឆេទ) */}
+          <div className="flex items-center gap-2.5 sm:gap-4 flex-wrap pt-0.5">
+            {/* ទឹកប្រាក់បានចាយសរុប */}
+            <div style={{ fontSize: '9px' }}>
+              <span
+                className="inline-flex items-center gap-1.5 bg-[#FFFFFF] text-[#2E8B57] px-2.5 py-0.5 rounded-lg border border-[#2E8B57]/20 shadow-2xs font-semibold"
+                style={{ fontSize: '9px' }}
+              >
+                <span className="text-[#2E8B57]">ទឹកប្រាក់បានចាយសរុប៖</span>
+                <span className="text-[#FF7F50] font-extrabold font-mono tracking-wide" style={{ fontSize: '10px', color: '#FF7F50' }}>
                   ${Number(totalSpent).toFixed(2)}
                 </span>
               </span>
             </div>
 
-            {/* 5. កាលបរិច្ឆេទ (នៅខាងក្រោមចំនួនទឹកលុយបានចាយសរុប) */}
-            <div className="text-emerald-200/90 font-medium pt-0.5">
-              <span className="font-semibold text-white/90" style={{ fontSize: '8px' }}>
+            {/* កាលបរិច្ឆេទ */}
+            <div className="text-[#2E8B57] font-medium">
+              <span className="font-semibold text-[#2E8B57] leading-none block" style={{ fontSize: '8px', color: '#2E8B57' }}>
                 {getKhmerFormattedDate()}
               </span>
             </div>
           </div>
+
         </div>
       </div>
 
@@ -445,14 +527,42 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <span>កាតមុខងារ និងសេវាកម្ម</span>
           </h2>
           <span className="text-[11px] text-slate-500 font-semibold bg-slate-100 px-2.5 py-1 rounded-full">
-            5 មុខងារ
+            6 មុខងារ
           </span>
         </div>
 
-        {/* សម្រាប់ទម្រង់ទូរស័ព្ទដៃ៖ មួយជួរមាន 2 កាត (Mobile: 2 cards per row: grid-cols-2, Desktop: 4 cards: lg:grid-cols-4) */}
-        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          {/* Card 1: ចូលទៅសន្សំពិន្ទុ */}
+        {/* សម្រាប់ទម្រង់ទូរស័ព្ទដៃ៖ មួយជួរមាន 2 កាត (Mobile: 2 cards per row: grid-cols-2, Desktop: sm:grid-cols-3 lg:grid-cols-3) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3 sm:gap-4">
+          {/* Card 1: បន្តតាមដានស្បែកមុខ */}
           <button
+            id="dashboard-card-skin-analysis"
+            onClick={() => {
+              setSkinAnalysisSubView('followup');
+              setActiveModal('skincare');
+            }}
+            className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-[#2E8B57]/10 via-[#2E8B57]/5 to-emerald-50/40 hover:from-[#2E8B57]/20 hover:to-emerald-100/60 border-2 border-[#2E8B57]/40 text-left transition cursor-pointer group shadow-2xs hover:shadow-md flex flex-col justify-between min-h-[120px] relative overflow-hidden"
+          >
+            <div className="flex items-center justify-between">
+              <div className="p-2 sm:p-2.5 rounded-xl bg-[#2E8B57] text-white shadow-xs group-hover:scale-105 transition-transform">
+                <Activity className="w-4 h-4 sm:w-5 sm:h-5" />
+              </div>
+              <span className="text-[10px] bg-[#2E8B57]/15 text-[#2E8B57] font-black px-1.5 py-0.5 rounded-md border border-[#2E8B57]/30">
+                តាមដាន
+              </span>
+            </div>
+            <div>
+              <h3 className="font-extrabold text-slate-900 text-xs sm:text-sm leading-snug">
+                បន្តតាមដានស្បែកមុខ
+              </h3>
+              <p className="text-[10px] text-slate-600 mt-1 line-clamp-1">
+                បន្តតាមដាន & របាយការណ៍
+              </p>
+            </div>
+          </button>
+
+          {/* Card 2: ចូលទៅសន្សំពិន្ទុ */}
+          <button
+            id="dashboard-card-points"
             onClick={() => {
               if (onOpenPoints) onOpenPoints();
               else showToast(`ពិន្ទុបច្ចុប្បន្នរបស់អ្នកគឺ ${points} ពិន្ទុ`);
@@ -477,6 +587,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           {/* Card 2: ការបញ្ជាទិញរបស់ខ្ញុំ */}
           <button
+            id="dashboard-card-orders"
             onClick={() => setActiveModal('orders')}
             className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 border border-blue-200 text-left transition cursor-pointer group shadow-2xs hover:shadow-md flex flex-col justify-between min-h-[120px] relative overflow-hidden"
           >
@@ -498,32 +609,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
           </button>
 
-          {/* Card 3: រង្វាន់របស់ខ្ញុំ */}
+          {/* Card 3: កម្រិតសមាជិក (Member Tier) */}
           <button
-            onClick={() => {
-              if (onOpenPoints) onOpenPoints();
-              else setActiveModal('benefits');
-            }}
-            className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-purple-50 to-violet-50 hover:from-purple-100 hover:to-violet-100 border border-purple-200 text-left transition cursor-pointer group shadow-2xs hover:shadow-md flex flex-col justify-between min-h-[120px] relative overflow-hidden"
-          >
-            <div className="flex items-center justify-between">
-              <div className="p-2 sm:p-2.5 rounded-xl bg-purple-600 text-white shadow-xs group-hover:scale-105 transition-transform">
-                <Gift className="w-4 h-4 sm:w-5 sm:h-5" />
-              </div>
-              <ChevronRight className="w-4 h-4 text-purple-700 group-hover:translate-x-1 transition-transform" />
-            </div>
-            <div>
-              <h3 className="font-extrabold text-slate-900 text-xs sm:text-sm leading-snug">
-                រង្វាន់របស់ខ្ញុំ
-              </h3>
-              <p className="text-[10px] text-slate-600 mt-1 line-clamp-1">
-                ប្តូរយករង្វាន់ & ប័ណ្ណបញ្ចុះតម្លៃ
-              </p>
-            </div>
-          </button>
-
-          {/* Card 4: កម្រិតសមាជិក */}
-          <button
+            id="dashboard-card-tier"
             onClick={() => setActiveModal('tier')}
             className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-amber-50 to-yellow-50 hover:from-amber-100 hover:to-yellow-100 border border-amber-200 text-left transition cursor-pointer group shadow-2xs hover:shadow-md flex flex-col justify-between min-h-[120px] relative overflow-hidden"
           >
@@ -546,10 +634,116 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </p>
             </div>
           </button>
+
+          {/* Card 5: ចាកចេញ (Logout Card) */}
+          <button
+            id="dashboard-card-logout"
+            onClick={handleLogout}
+            className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-rose-50 to-red-50 hover:from-rose-100 hover:to-red-100 border border-rose-200 text-left transition cursor-pointer group shadow-2xs hover:shadow-md flex flex-col justify-between min-h-[120px] relative overflow-hidden"
+            title="ចាកចេញពីគណនី (Logout)"
+          >
+            <div className="flex items-center justify-between">
+              <div className="p-2 sm:p-2.5 rounded-xl bg-rose-600 text-white shadow-xs group-hover:scale-105 transition-transform">
+                <LogOut className="w-4 h-4 sm:w-5 sm:h-5" />
+              </div>
+              <ChevronRight className="w-4 h-4 text-rose-600 group-hover:translate-x-1 transition-transform" />
+            </div>
+            <div>
+              <h3 className="font-extrabold text-slate-900 text-xs sm:text-sm leading-snug">
+                ចាកចេញ
+              </h3>
+              <p className="text-[10px] text-rose-600 font-medium mt-1 line-clamp-1">
+                ចាកចេញពីគណនី (Logout)
+              </p>
+            </div>
+          </button>
         </div>
       </div>
 
       {/* MODALS FOR FEATURE CARDS */}
+
+      {/* 1. Modal: វិភាគស្បែកមុខរបស់ខ្ញុំ (My Skin Analysis) */}
+      {activeModal === 'skincare' && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 font-battambang animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-4 sm:p-6 space-y-5 shadow-2xl relative border border-slate-200 max-h-[92vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#2E8B57] text-white flex items-center justify-center shadow-xs shrink-0">
+                  <Activity className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
+                    {skinAnalysisSubView === 'report'
+                      ? 'របាយការណ៍តាមដានស្បែកមុខ'
+                      : 'បន្តតាមដានការប្រែប្រួលស្បែកមុខ'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    តាមដានវឌ្ឍនភាពស្បែកមុខ និងរបាយការណ៍លម្អិត
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  setActiveModal(null);
+                  setSkinAnalysisSubView('followup');
+                }}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-full bg-slate-100 transition cursor-pointer shrink-0"
+                title="បិទ"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Tab Buttons in the SAME row on mobile & desktop: [បន្តតាមដាន] [របាយការណ៍] */}
+            {/* Formatted cleanly without icons */}
+            <div className="grid grid-cols-2 gap-1.5 sm:gap-2 p-1 bg-slate-200/80 rounded-2xl border border-slate-300/60">
+              {/* Tab 1: បន្តតាមដាន */}
+              <button
+                type="button"
+                onClick={() => setSkinAnalysisSubView('followup')}
+                className={`py-2 sm:py-2.5 px-2 sm:px-3 rounded-xl font-black text-xs sm:text-sm text-center flex items-center justify-center transition cursor-pointer leading-tight ${
+                  skinAnalysisSubView === 'followup'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'text-slate-700 hover:text-slate-900 hover:bg-slate-300/50'
+                }`}
+              >
+                <span>បន្តតាមដាន</span>
+              </button>
+
+              {/* Tab 2: របាយការណ៍ */}
+              <button
+                type="button"
+                onClick={() => setSkinAnalysisSubView('report')}
+                className={`py-2 sm:py-2.5 px-2 sm:px-3 rounded-xl font-black text-xs sm:text-sm text-center flex items-center justify-center transition cursor-pointer leading-tight ${
+                  skinAnalysisSubView === 'report'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'text-slate-700 hover:text-slate-900 hover:bg-slate-300/50'
+                }`}
+              >
+                <span>របាយការណ៍</span>
+              </button>
+            </div>
+
+            {/* SubView 1: បន្តតាមដាន (Follow-up Page with Date picker on top and Q&A below) */}
+            {skinAnalysisSubView === 'followup' && (
+              <SkinFollowUpView
+                baseline={getComedonesBaseline()}
+                onOpenReportTab={() => setSkinAnalysisSubView('report')}
+              />
+            )}
+
+            {/* SubView 2: Detailed Report View with Top Date Picker & 3 Cards/row on Desktop, 1 on Mobile */}
+            {skinAnalysisSubView === 'report' && (
+              <SkinReportsHistoryView
+                language="km"
+                onOpenFollowUpTab={() => setSkinAnalysisSubView('followup')}
+              />
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 2. Modal: ការបញ្ជាទិញរបស់ខ្ញុំ (My Orders) */}
       {activeModal === 'orders' && (
@@ -594,17 +788,57 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       <span className="font-extrabold text-slate-900">
                         កូដបញ្ជាទិញ៖ {ord.orderNumber}
                       </span>
-                      <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                        {ord.orderStatus === 'packing' ? 'កំពុងរៀបចំ' : ord.orderStatus || 'បានបញ្ជាក់'}
-                      </span>
                     </div>
                     <div className="flex justify-between text-slate-600">
                       <span>កាលបរិច្ឆេទ៖</span>
                       <span>{ord.createdAt ? new Date(ord.createdAt).toLocaleDateString('km-KH') : 'ថ្មីៗនេះ'}</span>
                     </div>
-                    <div className="flex justify-between font-bold text-slate-900">
+
+                    {/* Products Ordered */}
+                    {ord.items && ord.items.length > 0 && (
+                      <div className="space-y-1.5 py-1.5 border-t border-slate-200/80">
+                        <span className="text-[11px] font-bold text-slate-700 block">
+                          ផលិតផលដែលបានទិញ ({ord.items.length})៖
+                        </span>
+                        <div className="space-y-1.5 pl-0.5">
+                          {ord.items.map((item, idx) => (
+                            <div key={idx} className="flex items-center justify-between gap-2 text-slate-700">
+                              <div className="flex items-center gap-2 min-w-0">
+                                {item.product?.image && (
+                                  <img
+                                    src={item.product.image}
+                                    alt={item.product?.nameKm || item.product?.name || 'Product'}
+                                    className="w-7 h-7 object-cover rounded-md border border-slate-200 shrink-0"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                )}
+                                <span className="truncate font-medium text-[11px] text-slate-800">
+                                  {item.product?.nameKm || item.product?.name || 'ផលិតផល'}
+                                  <span className="text-slate-500 font-normal ml-1">x{item.quantity}</span>
+                                </span>
+                              </div>
+                              <span className="font-mono font-semibold text-slate-800 shrink-0 text-[11px]">
+                                ${((item.product?.priceUsd || 0) * item.quantity).toFixed(2)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Shipping Fee */}
+                    <div className="flex justify-between text-slate-600 border-t border-slate-200/80 pt-1.5">
+                      <span>ថ្លៃដឹកជញ្ជូន៖</span>
+                      <span className="font-mono font-medium">
+                        {(ord.shippingFeeUsd === 0 || !ord.shippingFeeUsd)
+                          ? 'ឥតគិតថ្លៃ'
+                          : `$${ord.shippingFeeUsd.toFixed(2)}`}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between font-bold text-slate-900 border-t border-slate-200/80 pt-1.5">
                       <span>ទឹកប្រាក់សរុប៖</span>
-                      <span className="text-emerald-700 font-mono">${(ord.totalUsd || 0).toFixed(2)}</span>
+                      <span className="text-emerald-700 font-mono text-sm font-black">${(ord.totalUsd || 0).toFixed(2)}</span>
                     </div>
                   </div>
                 ))}
@@ -685,7 +919,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               className="w-full py-3 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-slate-950 font-black rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-2 transition cursor-pointer shadow-sm mt-2"
             >
               <Award className="w-4 h-4" />
-              <span>មើលលក្ខខណ្ឌ & អត្ថប្រយោជន៍កម្រិតសមាជិកទាំងអស់</span>
+              <span>មើលតារាងកម្រិតសមាជិកទាំងអស់</span>
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
@@ -772,494 +1006,71 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </div>
               <div>
                 <h3 className="text-lg font-extrabold text-slate-900">
-                  កម្រិតសមាជិក & អត្ថប្រយោជន៍
+                  កម្រិតសមាជិក
                 </h3>
               </div>
             </div>
 
-            {/* Status & Progress Bar */}
-            <div className="p-4 bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-500 text-slate-950 rounded-2xl space-y-2.5 shadow-sm">
-              <div className="flex justify-between items-center text-xs font-black">
-                <span className="flex items-center gap-1.5 flex-wrap">
-                  {isVvip ? (
-                    <span className="inline-flex items-center gap-1 bg-slate-950 text-amber-300 px-2.5 py-0.5 rounded-full font-black text-xs">
-                      <GreenDiamondIcon size={13} />
-                      <GreenDiamondIcon size={13} />
-                      <span>សមាជិក VVIP</span>
-                    </span>
-                  ) : isVip ? (
-                    <span className="inline-flex items-center gap-1 bg-slate-950 text-emerald-300 px-2.5 py-0.5 rounded-full font-black text-xs">
-                      <GreenDiamondIcon size={14} />
-                      <span>សមាជិក VIP</span>
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 bg-slate-950 text-white px-2.5 py-0.5 rounded-full font-black text-xs">
-                      <span>⭐ សមាជិកធម្មតា</span>
-                    </span>
-                  )}
-                </span>
-                <span className="font-mono bg-white/20 px-2 py-0.5 rounded-md font-extrabold">
-                  ទិញសរុប៖ ${Number(totalSpent).toFixed(2)}
-                </span>
-              </div>
-
-              {/* Progress bar */}
-              <div className="w-full bg-slate-900/20 rounded-full h-3 overflow-hidden p-0.5">
-                <div
-                  className="bg-slate-950 h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: isVvip
-                      ? '100%'
-                      : isVip
-                      ? `${Math.min(100, (Number(totalSpent) / 1000) * 100)}%`
-                      : `${Math.min(100, (Number(totalSpent) / 200) * 100)}%`,
-                  }}
-                />
-              </div>
-
-              <p className="text-[11px] font-bold text-slate-900 pt-0.5">
-                {isVvip
-                  ? '🎉 អបអរសាទរ! លោកអ្នកជាសមាជិក VVIP ទទួលបានអត្ថប្រយោជន៍ខ្ពស់បំផុត!'
-                  : isVip
-                  ? `ត្រូវការចំណាយ $${Math.max(0, 1000 - Number(totalSpent)).toFixed(2)} ទៀត ដើម្បីឡើងជាសមាជិក VVIP (ចំណាយ $1000+)!`
-                  : `ត្រូវការចំណាយ $${Math.max(0, 200 - Number(totalSpent)).toFixed(2)} ទៀត ដើម្បីឡើងជាសមាជិក VIP (ចំណាយ $200+)!`}
-              </p>
-            </div>
-
-            {/* Interactive Tier Selection Tabs */}
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {/* Tab 1: សមាជិកធម្មតា */}
-                <button
-                  onClick={() => setSelectedTierTab('normal')}
-                  className={`p-2.5 rounded-2xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-2xs ${
-                    selectedTierTab === 'normal'
-                      ? 'bg-amber-100 border-amber-400 text-amber-950 ring-2 ring-amber-400/40 font-extrabold'
-                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100 font-medium'
-                  }`}
-                >
-                  <span className="text-base leading-none">⭐</span>
-                  <span className="text-xs">សមាជិកធម្មតា</span>
-                  {isNormal && (
-                    <span className="text-[9px] bg-amber-200/80 text-amber-900 px-1.5 py-0.2 rounded-full font-bold">
-                      កម្រិតអ្នក
-                    </span>
-                  )}
-                </button>
-
-                {/* Tab 2: សមាជិក VIP */}
-                <button
-                  onClick={() => setSelectedTierTab('vip')}
-                  className={`p-2.5 rounded-2xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-2xs ${
-                    selectedTierTab === 'vip'
-                      ? 'bg-emerald-100 border-emerald-500 text-emerald-950 ring-2 ring-emerald-400/40 font-extrabold'
-                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100 font-medium'
-                  }`}
-                >
-                  <GreenDiamondIcon size={18} />
-                  <span className="text-xs">សមាជិក VIP</span>
-                  {isVip && (
-                    <span className="text-[9px] bg-emerald-200 text-emerald-900 px-1.5 py-0.2 rounded-full font-bold">
-                      កម្រិតអ្នក
-                    </span>
-                  )}
-                </button>
-
-                {/* Tab 3: សមាជិក VVIP */}
-                <button
-                  onClick={() => setSelectedTierTab('vvip')}
-                  className={`p-2.5 rounded-2xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-2xs ${
-                    selectedTierTab === 'vvip'
-                      ? 'bg-emerald-100 border-emerald-500 text-emerald-950 ring-2 ring-emerald-400/40 font-extrabold'
-                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100 font-medium'
-                  }`}
-                >
-                  <div className="flex items-center gap-0.5">
-                    <GreenDiamondIcon size={16} />
-                    <GreenDiamondIcon size={16} />
-                  </div>
-                  <span className="text-xs">សមាជិក VVIP</span>
-                  {isVvip && (
-                    <span className="text-[9px] bg-emerald-200 text-emerald-900 px-1.5 py-0.2 rounded-full font-bold">
-                      កម្រិតអ្នក
-                    </span>
-                  )}
-                </button>
-
-                {/* Tab 4: Facebook Top Friends */}
-                <button
-                  onClick={() => setSelectedTierTab('fb_top_friends')}
-                  className={`p-2.5 rounded-2xl border text-center transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-2xs ${
-                    selectedTierTab === 'fb_top_friends'
-                      ? 'bg-blue-100 border-blue-500 text-blue-950 ring-2 ring-blue-400/40 font-extrabold'
-                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100 font-medium'
-                  }`}
-                >
-                  <FacebookIconBadge size={18} title="Facebook Top Friends" />
-                  <span className="text-xs">FB Top Friends</span>
-                  {isFacebookTopFriend && (
-                    <span className="text-[9px] bg-blue-200 text-blue-900 px-1.5 py-0.2 rounded-full font-bold">
-                      កម្រិតអ្នក
-                    </span>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {/* DYNAMIC PERKS CARD FOR SELECTED TIER */}
-            <div className="animate-in fade-in duration-300">
-              {/* 1. សមាជិកធម្មតា */}
-              {selectedTierTab === 'normal' && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-amber-50/90 via-orange-50/60 to-amber-100/50 border-2 border-amber-300 space-y-3 shadow-xs">
-                  <div className="flex items-center justify-between border-b border-amber-200/80 pb-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">⭐</span>
-                      <div>
-                        <h4 className="font-extrabold text-amber-950 text-sm">
-                          អត្ថប្រយោជន៍សមាជិកធម្មតា (Normal Member)
-                        </h4>
-                        <p className="text-[11px] text-amber-800 font-medium">
-                          លក្ខខណ្ឌ៖ ចុះឈ្មោះគណនីលើវេបសាយ Lumimei ដោយឥតគិតថ្លៃ
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-2.5 py-1 rounded-xl bg-amber-200/80 text-amber-900 text-[11px] font-extrabold shrink-0">
-                      សមាជិកទូទៅ
-                    </span>
-                  </div>
-
-                  <div className="space-y-2.5 text-xs text-slate-800">
-                    <div className="p-3 bg-white/90 rounded-xl border border-amber-200 flex items-start gap-2.5 shadow-2xs">
-                      <Gift className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                      <p className="leading-relaxed font-semibold">
-                        ពេលប្ដីឬប្រពន្ធ ឬក៏សង្សារ ទិញកាដូឲ្យម្ចាស់ខួប ថែមជូនកាដូខួបកំណើតតូចមួយ និង free ការខ្ចប់កាដូដ៏ស្រស់ស្អាតជូន
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/90 rounded-xl border border-amber-200 flex items-start gap-2.5 shadow-2xs">
-                      <Coins className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                      <p className="leading-relaxed font-semibold">
-                        សន្សំពិន្ទុរាល់ការបញ្ជាទិញ និងចុះវត្តមានប្រចាំថ្ងៃ ដើម្បីប្តូរយករង្វាន់ និងប័ណ្ណបញ្ចុះតម្លៃ
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/90 rounded-xl border border-amber-200 flex items-start gap-2.5 shadow-2xs">
-                      <Sparkles className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                      <p className="leading-relaxed font-semibold">
-                        ពិគ្រោះបញ្ហាស្បែកមុខជាមួយ AI Skincare Advisor ដោយឥតគិតថ្លៃ 24/7
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 2. សមាជិក VIP */}
-              {selectedTierTab === 'vip' && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-emerald-50/90 via-teal-50/60 to-emerald-100/50 border-2 border-emerald-400 space-y-3 shadow-xs">
-                  <div className="flex items-center justify-between border-b border-emerald-200/80 pb-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 bg-emerald-100 rounded-xl shadow-2xs">
-                        <GreenDiamondIcon size={20} />
-                      </div>
-                      <div>
-                        <h4 className="font-extrabold text-emerald-950 text-sm">
-                          អត្ថប្រយោជន៍សមាជិក VIP (ចំណាយ $200+)
-                        </h4>
-                        <p className="text-[11px] text-emerald-800 font-medium">
-                          លក្ខខណ្ឌ៖ ចំណាយចាប់ពី $200 ឡើងទៅ ឬសន្សំបាន 20 ពិន្ទុ
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-2.5 py-1 rounded-xl bg-emerald-200 text-emerald-900 text-[11px] font-extrabold shrink-0">
-                      VIP Member
-                    </span>
-                  </div>
-
-                  <div className="space-y-2.5 text-xs text-slate-800">
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ១
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900">
-                        ថែមជូនកាដូខួបកំណើតតូចមួយ
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ២
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900">
-                        ពេលប្ដីឬប្រពន្ធ ឬក៏សង្សារ ទិញកាដូឲ្យម្ចាស់ខួប ថែមជូនកាដូខួបកំណើតតូចមួយ និង free ការខ្ចប់កាដូដ៏ស្រស់ស្អាតជូន
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ៣
-                      </span>
-                      <p className="leading-relaxed font-bold text-emerald-900">
-                        រាល់ការចំណាយអស់ 20 ដុល្លារ បញ្ចុះតម្លៃជូន 10% free ដឹក
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ៤
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
-                        <span>ទទួលបានផ្លាកសញ្ញាត្បូងពេជ្របៃតង</span>
-                        <GreenDiamondIcon size={16} />
-                        <span>លើ Profile គណនីរបស់អ្នក</span>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 3. សមាជិក VVIP */}
-              {selectedTierTab === 'vvip' && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-emerald-100/80 via-teal-100/50 to-emerald-200/50 border-2 border-emerald-500 space-y-3 shadow-xs">
-                  <div className="flex items-center justify-between border-b border-emerald-300 pb-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 bg-emerald-200 rounded-xl shadow-2xs flex items-center gap-0.5">
-                        <GreenDiamondIcon size={18} />
-                        <GreenDiamondIcon size={18} />
-                      </div>
-                      <div>
-                        <h4 className="font-extrabold text-emerald-950 text-sm">
-                          អត្ថប្រយោជន៍សមាជិក VVIP (ចំណាយ $1000+)
-                        </h4>
-                        <p className="text-[11px] text-emerald-800 font-medium">
-                          លក្ខខណ្ឌ៖ ចំណាយចាប់ពី $1000 ឡើងទៅ ឬសន្សំបាន 100 ពិន្ទុ
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-2.5 py-1 rounded-xl bg-emerald-600 text-white text-[11px] font-extrabold shrink-0 shadow-2xs">
-                      VVIP Member
-                    </span>
-                  </div>
-
-                  <div className="space-y-2.5 text-xs text-slate-800">
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-300 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ១
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900">
-                        ថែមជូនកាដូខួបកំណើតពិសេស (Special Birthday Gift)
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-300 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ២
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900">
-                        ពេលប្ដីឬប្រពន្ធ ឬក៏សង្សារ ទិញកាដូឲ្យម្ចាស់ខួប ថែមជូនកាដូខួបកំណើតតូចមួយ និង free ការខ្ចប់កាដូដ៏ស្រស់ស្អាតជូន
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-300 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ៣
-                      </span>
-                      <p className="leading-relaxed font-bold text-emerald-900">
-                        រាល់ការចំណាយអស់ 20 ដុល្លារ បញ្ចុះតម្លៃជូន 15% ទៅ 20% free ដឹកគ្រប់ការកុម្ម៉ង់
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-emerald-300 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ៤
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
-                        <span>ទទួលបានផ្លាកសញ្ញាត្បូងពេជ្របៃតងទ្វេ</span>
-                        <span className="inline-flex items-center gap-0.5">
-                          <GreenDiamondIcon size={16} />
-                          <GreenDiamondIcon size={16} />
-                        </span>
-                        <span>លើ Profile គណនីរបស់អ្នក</span>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 4. Facebook Top Friends */}
-              {selectedTierTab === 'fb_top_friends' && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-blue-50/90 via-sky-50/60 to-indigo-100/50 border-2 border-blue-400 space-y-3 shadow-xs">
-                  <div className="flex items-center justify-between border-b border-blue-200/80 pb-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1 bg-[#1877F2] rounded-xl text-white shadow-2xs">
-                        <FacebookIconBadge size={22} title="Facebook Top Friends" />
-                      </div>
-                      <div>
-                        <h4 className="font-extrabold text-blue-950 text-sm">
-                          អត្ថប្រយោជន៍ Facebook Top Friends
-                        </h4>
-                        <p className="text-[11px] text-blue-800 font-medium">
-                          លក្ខខណ្ឌ៖ មិត្តភក្តិ & អ្នកគាំទ្រឆ្នើម (Top Fan) លើទំព័រ Facebook Lumimei
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-2.5 py-1 rounded-xl bg-blue-200 text-blue-900 text-[11px] font-extrabold shrink-0">
-                      FB Top Friend
-                    </span>
-                  </div>
-
-                  <div className="space-y-2.5 text-xs text-slate-800">
-                    <div className="p-3 bg-white/95 rounded-xl border border-blue-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-[#1877F2] text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ១
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900">
-                        ថែមជូនកាដូខួបកំណើតតូចមួយ
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-blue-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-[#1877F2] text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ២
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900">
-                        ពេលប្ដីឬប្រពន្ធ ឬក៏សង្សារ ទិញកាដូឲ្យម្ចាស់ខួប ថែមជូនកាដូខួបកំណើតតូចមួយ និង free ការខ្ចប់កាដូដ៏ស្រស់ស្អាតជូន
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-blue-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-[#1877F2] text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ៣
-                      </span>
-                      <p className="leading-relaxed font-bold text-blue-900">
-                        រាល់ការចំណាយអស់ 10 ដុល្លារ បញ្ចុះតម្លៃជូន 10% free ដឹក
-                      </p>
-                    </div>
-
-                    <div className="p-3 bg-white/95 rounded-xl border border-blue-200 flex items-start gap-2.5 shadow-2xs">
-                      <span className="w-6 h-6 rounded-full bg-[#1877F2] text-white font-black flex items-center justify-center shrink-0 text-xs mt-0.5">
-                        ៤
-                      </span>
-                      <p className="leading-relaxed font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
-                        <span>ទទួលបានផ្លាកសញ្ញា Facebook Top Friends</span>
-                        <FacebookIconBadge size={16} title="Facebook Top Friends" />
-                        <span>លើ Profile គណនីរបស់អ្នក</span>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Clickable Comparison Table */}
-            <div className="space-y-2 text-xs">
+            {/* តារាងសង្ខេបកម្រិតសមាជិក */}
+            <div className="space-y-3 pt-1">
               <div className="flex items-center justify-between">
-                <h4 className="font-extrabold text-slate-900">
-                  តារាងសង្ខេបកម្រិតសមាជិក (ចុចលើជួរនីមួយៗដើម្បីជ្រើសរើស)៖
+                <h4 className="font-extrabold text-slate-900 text-sm sm:text-base">
+                  តារាងសង្ខេបកម្រិតសមាជិក
                 </h4>
               </div>
-              <div className="border border-slate-200 rounded-2xl overflow-hidden text-slate-700">
-                <div className="grid grid-cols-3 bg-slate-100 p-2.5 font-extrabold text-slate-900 border-b border-slate-200">
+              <div className="border border-slate-200 rounded-2xl overflow-hidden text-slate-700 shadow-2xs">
+                <div className="grid grid-cols-3 bg-slate-100 p-3 font-extrabold text-slate-900 border-b border-slate-200 text-xs sm:text-sm">
                   <span>កម្រិតសមាជិក</span>
                   <span className="text-center">លក្ខខណ្ឌកំណត់</span>
                   <span className="text-center">សញ្ញា (Badge)</span>
                 </div>
 
                 {/* 1. សមាជិកធម្មតា Row */}
-                <div
-                  onClick={() => setSelectedTierTab('normal')}
-                  className={`grid grid-cols-3 p-2.5 border-b border-slate-100 items-center cursor-pointer transition ${
-                    selectedTierTab === 'normal'
-                      ? 'bg-amber-100/80 font-bold border-l-4 border-l-amber-500'
-                      : 'hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="font-bold text-slate-800 flex items-center gap-1">
+                <div className="grid grid-cols-3 p-3 border-b border-slate-100 items-center">
+                  <span className="font-bold flex items-center gap-1" style={{ fontSize: '12px', color: '#2E8B57' }}>
                     <span>សមាជិកធម្មតា</span>
                   </span>
                   <span className="text-center text-slate-600 text-xs">ចុះឈ្មោះស្វ័យប្រវត្តិ</span>
                   <div className="flex justify-center">
-                    <span className="text-amber-500 text-sm">⭐</span>
+                    <span className="text-amber-500 text-base">⭐</span>
                   </div>
                 </div>
 
-                {/* 2. សមាជិក VIP Row */}
-                <div
-                  onClick={() => setSelectedTierTab('vip')}
-                  className={`grid grid-cols-3 p-2.5 border-b border-slate-100 items-center cursor-pointer transition ${
-                    selectedTierTab === 'vip'
-                      ? 'bg-emerald-100/80 font-bold border-l-4 border-l-emerald-500'
-                      : 'hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="font-bold text-emerald-800">សមាជិក VIP</span>
-                  <span className="text-center text-emerald-700 text-xs font-bold">ចំណាយចាប់ពី $200 ឡើង</span>
-                  <div className="flex justify-center">
-                    <GreenDiamondIcon size={20} />
-                  </div>
-                </div>
-
-                {/* 3. សមាជិក VVIP Row */}
-                <div
-                  onClick={() => setSelectedTierTab('vvip')}
-                  className={`grid grid-cols-3 p-2.5 border-b border-slate-100 items-center cursor-pointer transition ${
-                    selectedTierTab === 'vvip'
-                      ? 'bg-emerald-100/80 font-bold border-l-4 border-l-emerald-500'
-                      : 'hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="font-bold text-emerald-800">សមាជិក VVIP</span>
-                  <span className="text-center text-emerald-700 text-xs font-bold">ចំណាយចាប់ពី $1000 ឡើង</span>
-                  <div className="flex justify-center gap-1">
-                    <GreenDiamondIcon size={18} />
-                    <GreenDiamondIcon size={18} />
-                  </div>
-                </div>
-
-                {/* 4. Facebook Top Friends Row */}
-                <div
-                  onClick={() => setSelectedTierTab('fb_top_friends')}
-                  className={`grid grid-cols-3 p-2.5 border-t border-blue-100 items-center cursor-pointer transition ${
-                    selectedTierTab === 'fb_top_friends'
-                      ? 'bg-blue-100/80 font-bold border-l-4 border-l-blue-500'
-                      : 'bg-blue-50/40 hover:bg-blue-50'
-                  }`}
-                >
-                  <span className="font-bold text-blue-900">Facebook Top Friends</span>
-                  <span className="text-center text-blue-800 text-[11px] font-semibold">
+                {/* 2. Facebook Top Friends Row */}
+                <div className="grid grid-cols-3 p-3 border-b border-slate-100 items-center">
+                  <span className="font-bold" style={{ fontSize: '12px', color: '#2E8B57' }}>
+                    Facebook Top Friends
+                  </span>
+                  <span className="text-center text-slate-600 text-xs font-semibold">
                     មិត្តភក្តិ & Top Fan លើ FB
                   </span>
                   <div className="flex justify-center">
                     <FacebookIconBadge size={20} title="Facebook Top Friends" />
                   </div>
                 </div>
-              </div>
 
-              {/* Facebook Top Friends Official Page Link */}
-              <div className="p-3 bg-gradient-to-r from-blue-50 via-sky-50 to-indigo-50 border border-blue-200 rounded-2xl flex items-center justify-between gap-3 shadow-2xs">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-[#1877F2] text-white flex items-center justify-center shadow-xs shrink-0">
-                    <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-                    </svg>
-                  </div>
-                  <div>
-                    <h5 className="font-extrabold text-blue-950 text-xs">
-                      Facebook Top Friends
-                    </h5>
-                    <p className="text-[10px] text-blue-800">
-                      ទទួលបានផ្លាកសញ្ញាពិសេស និងការបញ្ចុះតម្លៃចំណាយត្រឹម $10 បាន 10% free ដឹក!
-                    </p>
+                {/* 3. សមាជិក VIP Row */}
+                <div className="grid grid-cols-3 p-3 border-b border-slate-100 items-center">
+                  <span className="font-bold" style={{ fontSize: '12px', color: '#2E8B57' }}>
+                    សមាជិក VIP
+                  </span>
+                  <span className="text-center text-emerald-700 text-xs font-bold">ចំណាយចាប់ពី $200 ឡើង</span>
+                  <div className="flex justify-center">
+                    <GreenDiamondIcon size={20} />
                   </div>
                 </div>
-                <a
-                  href="https://www.facebook.com/LumimeiCambodia"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-3 py-1.5 bg-[#1877F2] hover:bg-blue-700 text-white rounded-xl text-[11px] font-bold transition shrink-0 shadow-xs flex items-center gap-1"
-                >
-                  <span>ទំព័រ Facebook</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
+
+                {/* 4. សមាជិក VVIP Row */}
+                <div className="grid grid-cols-3 p-3 items-center">
+                  <span className="font-bold" style={{ fontSize: '12px', color: '#2E8B57' }}>
+                    សមាជិក VVIP
+                  </span>
+                  <span className="text-center text-emerald-700 text-xs font-bold">ចំណាយចាប់ពី $1000 ឡើង</span>
+                  <div className="flex justify-center gap-1">
+                    <GreenDiamondIcon size={18} />
+                    <GreenDiamondIcon size={18} />
+                  </div>
+                </div>
               </div>
             </div>
           </div>

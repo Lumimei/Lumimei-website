@@ -1,167 +1,268 @@
 import React from 'react';
-import { Send, ShoppingBag } from 'lucide-react';
 import { Language } from '../types';
-import riceMaskImg from '../assets/images/lumimei_rice_mask_1785063133244.jpg';
 
 interface HeroBannerProps {
   language: Language;
   onOpenAiAdvisor?: () => void;
+  onOpenFreeAnalysis?: () => void;
   onSelectTag?: (tag: string) => void;
   onNavigateToProducts?: () => void;
 }
 
+const MUOYKIM_PHOTO_URL = 'https://i.postimg.cc/6Q7C9zJ3/IMG-20260916-113308.png';
+
 export const HeroBanner: React.FC<HeroBannerProps> = ({
   language,
+  onOpenAiAdvisor,
+  onOpenFreeAnalysis,
   onNavigateToProducts,
 }) => {
-  const handleChatConsultation = () => {
-    window.open('https://t.me/Lumimeiadmin', '_blank');
-  };
-
-  const handleOrderNow = () => {
-    if (onNavigateToProducts) {
+  const handleCtaClick = () => {
+    if (onOpenAiAdvisor) {
+      onOpenAiAdvisor();
+    } else if (onOpenFreeAnalysis) {
+      onOpenFreeAnalysis();
+    } else if (onNavigateToProducts) {
       onNavigateToProducts();
     } else {
-      window.location.hash = '#products';
+      const el = document.getElementById('products-section');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
   return (
-    <div className="relative overflow-hidden bg-white rounded-2xl border-2 border-emerald-600/30 p-4 sm:p-7 mt-1.5 mb-6 shadow-md">
-      {/* Decorative top-right green accent wave */}
-      <div className="absolute -top-16 -right-16 w-64 h-64 bg-emerald-50 rounded-full blur-2xl pointer-events-none" />
-      <div className="absolute -bottom-16 -left-16 w-64 h-64 bg-emerald-100/40 rounded-full blur-2xl pointer-events-none" />
+    <div id="lumimei-hero-section" className="w-full mt-1.5 mb-6">
+      {/* =========================================================================
+          1. 手机端 (< 768px):
+             - Muoykim 真人大图 + 文字覆盖在图片上
+             - 不要使用左右双栏
+             - 比例 9:16，width: 100%，object-fit: cover, object-position: center top
+             - border-radius: 18–22px (rounded-[20px])
+             - 底部深绿色渐变 Overlay (保持人脸明亮，底部加深保障文字清晰)
+             - 文字层：position: absolute, left: 20px, right: 20px, bottom: 24–32px, 全部 left aligned
+         ========================================================================= */}
+      <div className="block md:hidden w-full relative">
+        <div className="relative w-full aspect-[9/16] min-h-[560px] max-h-[82vh] rounded-[20px] overflow-hidden shadow-lg border border-[#2E8B57]/30 bg-[#062017]">
+          {/* Muoykim 真人高清图片 - 保持高清原图比例，object-fit: cover */}
+          <img
+            src={MUOYKIM_PHOTO_URL}
+            alt="Muoykim ស្ថាបនិក Lumimei"
+            className="w-full h-full object-cover object-top"
+            loading="eager"
+            decoding="async"
+            referrerPolicy="no-referrer"
+          />
 
-      <div className="relative z-10 grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
-        {/* Text Content */}
-        <div className="md:col-span-7 space-y-3.5 sm:space-y-4">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-700 text-white text-xs font-semibold shadow-xs">
-            <span className="font-opensans" style={{ fontFamily: "'Open Sans', 'Battambang', sans-serif" }}>
+          {/* 摄影级多向渐变遮罩 (保持人脸明亮清透，文字所在左下区域加深)
+              - 顶部 0%–35%: 完全透明，人脸与发丝清晰自然
+              - 中部 35%–65%: 柔和过渡
+              - 底部 65%–100%: 加深至 0.88–0.96，确保白色与薄荷绿 Khmer 文字达到 4.5:1+ 极佳对比度
+              - 左侧增加水平微暗角，让左侧文字区域更加深邃
+          */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background:
+                'linear-gradient(to top, rgba(3, 20, 14, 0.96) 0%, rgba(3, 20, 14, 0.88) 34%, rgba(3, 20, 14, 0.52) 58%, rgba(3, 20, 14, 0.14) 75%, rgba(0, 0, 0, 0) 90%), linear-gradient(to right, rgba(3, 20, 14, 0.72) 0%, rgba(3, 20, 14, 0.32) 55%, rgba(0, 0, 0, 0) 100%)',
+            }}
+          />
+
+          {/* 文字内容覆盖层: 位于图片左下方较暗位置，不遮挡人脸，左右保留至少 20px padding，容器宽度约 85% */}
+          <div className="absolute left-[20px] bottom-[24px] sm:bottom-[30px] z-10 w-[88%] max-w-[85%] flex flex-col items-start text-left space-y-2.5 sm:space-y-3.5">
+            {/* 1. 主标题: មុខឡើងមុនញឹកញាប់មែនទេ?
+                - 白色、Noto Sans Khmer 粗体 (font-weight: 700)
+                - 手机端字号: 22px
+                - 舒展行高 (1.35)，添加轻微 text-shadow 避免融入背景
+            */}
+            <h1 className="text-white text-[22px] sm:text-[24px] font-bold font-noto-sans-khmer leading-[1.35] tracking-normal drop-shadow-[0_2px_4px_rgba(0,0,0,0.85)]">
               {language === 'km'
-                ? 'ប្រូម៉ូសិនពិសេសប្រចាំខែ បញ្ចុះតម្លៃរហូតដល់ 30%'
+                ? 'មុខឡើងមុនញឹកញាប់មែនទេ?'
                 : language === 'zh'
-                ? '本月特别优惠：高达 30% 折扣'
-                : 'Special Monthly Promo: Up to 30% Off'}
-            </span>
-          </div>
+                ? '面部经常反复长痘吗？'
+                : 'Frequent Acne Breakouts?'}
+            </h1>
 
-          <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight">
-            {language === 'km' ? (
-              <span className="tracking-normal">
-                <span className="font-opensans font-bold" style={{ fontFamily: "'Open Sans', sans-serif", color: '#009966' }}>Lumimei</span> <span className="text-emerald-700 font-battambang">អ្នកឯកទេសថែរក្សាមុខមុនគ្រប់ប្រភេទ</span>
-              </span>
-            ) : language === 'zh' ? (
-              <span className="font-opensans">
-                告别化学烂脸隐患：<span className="text-emerald-700">100% 纯天然温和护肤，根治敏感暗沉与痘痘！</span>
-              </span>
-            ) : (
-              <span className="font-opensans font-bold">
-                Say Goodbye to Harsh Chemicals & Damage: <span className="text-emerald-700">100% Safe Organic Skincare!</span>
-              </span>
-            )}
-          </h2>
+            {/* 2. 重点副标题: កុំប្រញាប់ទិញផលិតផល
+                - 高亮薄荷绿 #A2F1C5 (对比度极高)
+                - 15px, font-weight: 600
+                - text-shadow 加强边缘辨识度
+            */}
+            <div className="text-[15px] font-semibold font-noto-sans-khmer leading-[1.5] text-[#A2F1C5] drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
+              {language === 'km'
+                ? 'កុំប្រញាប់ទិញផលិតផល'
+                : language === 'zh'
+                ? '先别急着盲目购买产品'
+                : "Don't Rush into Buying Products"}
+            </div>
 
-          <div className="text-slate-600 text-xs sm:text-sm leading-relaxed max-w-xl font-opensans">
-            {language === 'km' ? (
-              <div className="space-y-2 text-slate-700">
-                <p className="font-semibold text-slate-900 leading-snug" style={{ fontSize: '18px' }}>
-                  តើបងប្អូនកំពុងជួបបញ្ហាស្បែកមុខ ដែលធ្វើឱ្យបាត់បង់ទំនុកចិត្តមែនទេ? មិនថាបងប្អូនកំពុងជួបបញ្ហា៖
-                </p>
-                <ul className="space-y-1 text-slate-800 pl-1 font-medium" style={{ fontSize: '16px' }}>
-                  <li>* មុនគ្រប់ប្រភេទ (មុនក្បាលខ្មៅ, មុនរលាក, មុនសាច់...)</li>
-                  <li>* ស្បែកមុខខ្មៅស្រអាប់ មិនភ្លឺថ្លា និងរន្ធញើសធំ</li>
-                  <li>* ស្បែកមុខរោល ងាយប្រតិកម្ម ឬរលាក</li>
-                  <li>* សរសៃក្រហមលើផ្ទៃមុខ</li>
-                </ul>
-                <p className="pt-1.5 text-emerald-900 font-semibold leading-relaxed" style={{ fontSize: '16px' }}>
-                  Lumimei នៅទីនេះដើម្បីជួយបងប្អូនដើម្បទទួលបានលទ្ធផលប្រសិទ្ធខ្ពស់ សន្សំលុយនិងសន្សំពេល Lumimei ថែស្បែកមុខបងប្អូនដោយក្តីស្រលាញ់បំផុត!
-                </p>
-              </div>
-            ) : language === 'zh' ? (
-              <div className="space-y-2">
-                <p className="font-bold text-slate-900">
-                  您是否正面临让您失去信心的面部肌肤困扰？无论您正经历：
-                </p>
-                <ul className="space-y-1 text-slate-800 pl-1">
-                  <li>* 各类痘痘（黑头、炎性痘痘、脂肪粒等）</li>
-                  <li>* 皮肤暗沉无光泽、毛孔粗大</li>
-                  <li>* 皮肤发红、易过敏或发炎</li>
-                  <li>* 面部红血丝明显</li>
-                </ul>
-                <p className="pt-1 text-emerald-800 font-semibold">
-                  Lumimei 陪伴在您身边，助您获得高效成果，省钱省时，Lumimei 倾注全心守护您的美丽肌肤！
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <p className="font-bold text-slate-900">
-                  Are you struggling with skin issues affecting your confidence? Whether dealing with:
-                </p>
-                <ul className="space-y-1 text-slate-800 pl-1">
-                  <li>* All types of acne (blackheads, inflammatory acne, textured bumps...)</li>
-                  <li>* Dull skin tone, lack of radiance, and enlarged pores</li>
-                  <li>* Sensitive, reactive, or irritated skin</li>
-                  <li>* Facial redness & visible broken capillaries</li>
-                </ul>
-                <p className="pt-1 text-emerald-800 font-semibold">
-                  Lumimei is here to deliver visible, highly effective results while saving your time and money—caring for your skin with the utmost love!
-                </p>
-              </div>
-            )}
-          </div>
+            {/* 3. 身份标题: ខ្ញុំ Muoykim ស្ថាបនិក Lumimei
+                - 白色、font-weight: 700
+                - 18px, text-shadow 强化
+            */}
+            <div className="text-white text-[18px] font-bold font-noto-sans-khmer leading-[1.4] drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+              {language === 'km'
+                ? 'ខ្ញុំ Muoykim ស្ថាបនិក Lumimei'
+                : language === 'zh'
+                ? '我是 Muoykim，Lumimei 创始人'
+                : 'I am Muoykim, Founder of Lumimei'}
+            </div>
 
-          {/* CTA Buttons - 2 side-by-side buttons in 1 row on mobile & desktop */}
-          <div className="grid grid-cols-2 gap-2 sm:gap-3 pt-2 max-w-md">
-            <button
-              id="hero-btn-chat-consult"
-              onClick={handleChatConsultation}
-              className="px-3 sm:px-4 py-2.5 sm:py-3 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold rounded-xl sm:rounded-2xl shadow-md hover:shadow-lg transition flex items-center justify-center gap-1.5 sm:gap-2 text-center cursor-pointer transform hover:-translate-y-0.5"
-            >
-              <Send className="w-4 h-4 text-emerald-100 shrink-0" />
-              <span className="text-[12px] sm:text-sm font-extrabold whitespace-nowrap">
-                {language === 'km' ? 'ឆាត់មកពិភាក្សាស្បែកមុខ' : language === 'zh' ? '联系在线咨询' : 'Chat Consultation'}
-              </span>
-            </button>
+            {/* 4. 说明文字: ចង់ជួយបងប្អូនយល់ពីបញ្ហាស្បែកមុខខ្លួនឯង អោយបានច្បាស់មុននឹងប្រើប្រាស់ផលិតផល
+                - 薄荷绿 #A2F1C5
+                - 正文字号: 15px, font-weight: 500
+                - line-height 舒适 (1.65)，不拥挤
+            */}
+            <p className="text-[15px] font-medium font-noto-sans-khmer leading-[1.65] text-[#A2F1C5] drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
+              {language === 'km' ? (
+                <>
+                  ចង់ជួយបងប្អូនយល់ពីបញ្ហាស្បែកមុខខ្លួនឯង<br />
+                  អោយបានច្បាស់មុននឹងប្រើប្រាស់ផលិតផល
+                </>
+              ) : language === 'zh' ? (
+                '希望能帮助大家在挑选或使用产品前，先深入清晰地了解自己面部的真正皮肤问题'
+              ) : (
+                'Helping you clearly understand your skin concerns before choosing and using products'
+              )}
+            </p>
 
-            <button
-              id="hero-btn-order-now"
-              onClick={handleOrderNow}
-              className="px-3 sm:px-4 py-2.5 sm:py-3 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-bold rounded-xl sm:rounded-2xl shadow-md hover:shadow-lg transition flex items-center justify-center gap-1.5 sm:gap-2 text-center cursor-pointer transform hover:-translate-y-0.5"
-            >
-              <ShoppingBag className="w-4 h-4 text-amber-100 shrink-0" />
-              <span className="text-[12px] sm:text-sm font-extrabold whitespace-nowrap">
-                {language === 'km' ? 'បញ្ជាទិញឥឡូវនេះ' : language === 'zh' ? '立即订购' : 'Order Now'}
-              </span>
-            </button>
+            {/* 5. CTA 按钮: វិភាគស្បែកមុខដោយឥតគិតថ្លៃ
+                - 高度 48–52px (h-[48px] sm:h-[52px])
+                - 高对比度背景色 #2E8B57 + 白色粗体文字 (font-weight: 700, 16px)
+                - 充足 padding，按钮文字单行不挤压
+            */}
+            <div className="pt-1 w-full sm:w-auto">
+              <button
+                id="hero-mobile-cta-btn"
+                onClick={handleCtaClick}
+                className="h-[48px] sm:h-[50px] min-h-[48px] px-5 sm:px-6 bg-[#2E8B57] hover:bg-[#257347] active:scale-[0.98] border border-[#42b672]/30 text-white font-bold rounded-2xl shadow-lg transition-all inline-flex items-center justify-center gap-2.5 cursor-pointer font-noto-sans-khmer whitespace-nowrap"
+              >
+                <span className="text-[16px]">
+                  {language === 'km'
+                    ? 'វិភាគស្បែកមុខដោយឥតគិតថ្លៃ'
+                    : language === 'zh'
+                    ? '免费测肤'
+                    : 'Free Skin Analysis'}
+                </span>
+                <span className="text-base font-bold translate-y-[-1px]">→</span>
+              </button>
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Highlight Image & Badges */}
-        <div className="md:col-span-5 relative flex justify-center">
-          <div className="relative w-full max-w-xs min-h-[220px] aspect-[4/3] sm:aspect-square rounded-2xl overflow-hidden shadow-lg border-2 border-white bg-slate-100">
-            <img
-              src="https://i.postimg.cc/Dz534vg7/IMG-20260708-135255.png"
-              alt="Lumimei Product"
-              className="w-full h-full object-cover transform hover:scale-105 transition duration-500"
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                const target = e.currentTarget;
-                if (target.src !== riceMaskImg) {
-                  target.src = riceMaskImg;
-                }
-              }}
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-900/70 via-transparent to-transparent flex flex-col justify-end p-4 text-white">
-              <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
-                Lumimei Star Product
-              </span>
-              <p className="text-sm font-bold leading-tight">
-                {language === 'km'
-                  ? 'ម៉ាសភក់ Lumimei Deep Purifying Clay Mask'
-                  : language === 'zh'
-                  ? 'Lumimei 深层净肤矿物泥膜'
-                  : 'Lumimei Deep Purifying Clay Mask'}
-              </p>
+      {/* =========================================================================
+          2. 电脑端 (>= 768px):
+             - width: 100%, min-height: 620px 或 70–80vh
+             - 左侧人物：46%
+             - 右侧内容：54%
+             - Hero 在一个 Desktop 屏幕内基本完整看到
+             - 左侧：Muoykim 真人图片, object-fit: cover, object-position: center top, 高度填满 Hero
+             - 右侧：文字全部 left aligned, 垂直居中或偏上
+             - 顺序：1. 主标题, 2. 核心副标题, 3. 身份标题, 4. 简短说明, 5. CTA
+         ========================================================================= */}
+      <div className="hidden md:flex w-full min-h-[620px] lg:h-[72vh] max-h-[760px] rounded-[24px] overflow-hidden border-2 border-[#2E8B57]/30 bg-[#052219] relative shadow-lg">
+        {/* 左侧人物：46% */}
+        <div className="relative w-[46%] h-full shrink-0 overflow-hidden bg-[#041d15]">
+          <img
+            src={MUOYKIM_PHOTO_URL}
+            alt="Muoykim ស្ថាបនិក Lumimei"
+            className="w-full h-full object-cover object-top"
+            referrerPolicy="no-referrer"
+          />
+          {/* 自然延伸的渐变过渡遮罩，让图片边缘与右侧背景无缝融合 */}
+          <div className="absolute inset-y-0 right-0 w-32 bg-gradient-to-r from-transparent to-[#052219] pointer-events-none" />
+          <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#052219]/70 to-transparent pointer-events-none" />
+        </div>
+
+        {/* 右侧内容：54% */}
+        <div className="w-[54%] h-full flex flex-col justify-center items-start text-left px-8 lg:px-12 xl:px-16 py-8 relative z-10">
+          {/* 背景柔和光晕 */}
+          <div className="absolute top-1/2 right-8 -translate-y-1/2 w-96 h-96 bg-[#2E8B57]/15 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="relative z-10 flex flex-col items-start space-y-4 lg:space-y-5 max-w-xl">
+            {/* 1. 主标题: មុខឡើងមុនញឹកញាប់មែនទេ?
+                - 原色: 白色
+                - 电脑端: 44–56px
+                - font-weight: 700–800
+            */}
+            <h1 className="text-white text-[42px] lg:text-[48px] xl:text-[54px] font-bold font-noto-sans-khmer leading-[1.25] tracking-tight drop-shadow-sm">
+              {language === 'km'
+                ? 'មុខឡើងមុនញឹកញាប់មែនទេ?'
+                : language === 'zh'
+                ? '面部经常反复长痘吗？'
+                : 'Frequent Acne Breakouts?'}
+            </h1>
+
+            {/* 2. 重点副标题: កុំប្រញាប់ទិញផលិតផល
+                - 浅薄荷绿 #a2f1c5 (高对比度)
+                - 电脑端: 30–40px
+                - Bold
+            */}
+            <div
+              className="text-[28px] lg:text-[34px] xl:text-[38px] font-semibold font-noto-sans-khmer leading-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
+              style={{ color: '#a2f1c5' }}
+            >
+              {language === 'km'
+                ? 'កុំប្រញាប់ទិញផលិតផល'
+                : language === 'zh'
+                ? '先别急着盲目购买产品'
+                : "Don't Rush into Buying Products"}
+            </div>
+
+            {/* 3. 身份标题: ខ្ញុំ Muoykim ស្ថាបនិក Lumimei
+                - 白色
+                - 电脑端: 24–30px
+                - Semi-bold
+            */}
+            <div className="text-white text-[24px] lg:text-[27px] xl:text-[29px] font-bold font-noto-sans-khmer leading-tight drop-shadow-sm">
+              {language === 'km'
+                ? 'ខ្ញុំ Muoykim ស្ថាបនិក Lumimei'
+                : language === 'zh'
+                ? '我是 Muoykim，Lumimei 创始人'
+                : 'I am Muoykim, Founder of Lumimei'}
+            </div>
+
+            {/* 4. 说明文字: ចង់ជួយបងប្អូនយល់ពីបញ្ហាស្បែកមុខខ្លួនឯង អោយបានច្បាស់មុននឹងប្រើប្រាស់ផលិតផល
+                - 浅薄荷绿 #a2f1c5 (高对比度)
+                - 电脑端: 18–22px
+                - line-height 1.6
+            */}
+            <p
+              className="text-[18px] lg:text-[20px] xl:text-[21px] font-medium font-noto-sans-khmer leading-[1.65] drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)] max-w-lg"
+              style={{ color: '#a2f1c5' }}
+            >
+              {language === 'km' ? (
+                <>
+                  ចង់ជួយបងប្អូនយល់ពីបញ្ហាស្បែកមុខខ្លួនឯង<br />
+                  អោយបានច្បាស់មុននឹងប្រើប្រាស់ផលិតផល
+                </>
+              ) : language === 'zh' ? (
+                '希望能帮助大家在挑选与使用护肤产品前，先清晰、全面地了解自己的面部肌肤问题'
+              ) : (
+                'Helping you clearly understand your skin concerns before choosing routines and using products'
+              )}
+            </p>
+
+            {/* 5. CTA: វិភាគស្បែកមុខដោយឥតគិតថ្លៃ →
+                - 样式: 背景 #2E8B57, 白色文字
+                - 电脑端: 18–20px, 高度 52–58px
+                - font-weight: 700 (粗体)
+            */}
+            <div className="pt-2">
+              <button
+                id="hero-desktop-cta-btn"
+                onClick={handleCtaClick}
+                className="h-[54px] px-8 bg-[#2E8B57] hover:bg-[#257347] active:scale-98 border border-[#42b672]/30 text-white text-[18px] lg:text-[19px] font-bold rounded-2xl shadow-lg hover:shadow-xl transition transform hover:-translate-y-0.5 inline-flex items-center justify-center gap-3 cursor-pointer font-noto-sans-khmer"
+              >
+                <span>
+                  {language === 'km'
+                    ? 'វិភាគស្បែកមុខដោយឥតគិតថ្លៃ'
+                    : language === 'zh'
+                    ? '免费测肤'
+                    : 'Free Skin Analysis'}
+                </span>
+                <span className="text-xl font-bold">→</span>
+              </button>
             </div>
           </div>
         </div>
@@ -169,3 +270,4 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
     </div>
   );
 };
+

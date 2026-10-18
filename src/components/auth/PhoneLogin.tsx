@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RecaptchaVerifier, ConfirmationResult, signInAnonymously, getAuth } from 'firebase/auth';
+import { RecaptchaVerifier, ConfirmationResult } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
-import { auth, formatToE164, checkPhoneNumberExists, maskPhoneNumber, db, collection, addDoc, UserProfile, saveMockUser } from '../../lib/firebase';
+import { auth, formatToE164, checkPhoneNumberExists, maskPhoneNumber, db, collection, addDoc, UserProfile, saveMockUser, verifyCustomerLoginName, isLikelyPhoneNumber, findUserByPhone, explainAuthError, AuthErrorInfo } from '../../lib/firebase';
 import { useAuth } from '../../context/AuthContext';
+import { runWithLoading } from '../../utils/asyncUtils';
 import {
   Phone,
   ArrowLeft,
@@ -27,6 +28,7 @@ import {
   Users,
   Send,
   ChevronDown,
+  MapPin,
 } from 'lucide-react';
 
 interface PhoneLoginProps {
@@ -62,6 +64,34 @@ export const AGE_RANGE_OPTIONS = [
   '44ឆ្នាំឡើង',
 ];
 
+export const LOCATION_OPTIONS = [
+  'រាជធានីភ្នំពេញ (Phnom Penh)',
+  'ខេត្តកណ្តាល (Kandal)',
+  'ខេត្តសៀមរាប (Siem Reap)',
+  'ខេត្តបាត់ដំបង (Battambang)',
+  'ខេត្តព្រះសីហនុ (Preah Sihanouk)',
+  'ខេត្តកំពង់ចាម (Kampong Cham)',
+  'ខេត្តកំពង់ស្ពឺ (Kampong Speu)',
+  'ខេត្តកំពង់ធំ (Kampong Thom)',
+  'ខេត្តកំពង់ឆ្នាំង (Kampong Chhnang)',
+  'ខេត្តកំពត (Kampot)',
+  'ខេត្តតាកែវ (Takeo)',
+  'ខេត្តស្វាយរៀង (Svay Rieng)',
+  'ខេត្តព្រៃវែង (Prey Veng)',
+  'ខេត្តបន្ទាយមានជ័យ (Banteay Meanchey)',
+  'ខេត្តពោធិ៍សាត់ (Pursat)',
+  'ខេត្តកោះកុង (Koh Kong)',
+  'ខេត្តក្រចេះ (Kratie)',
+  'ខេត្តស្ទឹងត្រែង (Stung Treng)',
+  'ខេត្តរតនគិរី (Ratanakiri)',
+  'ខេត្តមណ្ឌលគិរី (Mondulkiri)',
+  'ខេត្តព្រះវិហារ (Preah Vihear)',
+  'ខេត្តឧត្តរមានជ័យ (Oddar Meanchey)',
+  'ខេត្តប៉ៃលិន (Pailin)',
+  'ខេត្តកែប (Kep)',
+  'ខេត្តត្បូងឃ្មុំ (Tboung Khmum)',
+];
+
 export interface SkinConcernOption {
   id: string;
   nameKm: string;
@@ -70,14 +100,14 @@ export interface SkinConcernOption {
 }
 
 const SKIN_CONCERN_OPTIONS: SkinConcernOption[] = [
-  { id: 'acne', nameKm: 'មុខមុន', descKm: 'មុនក្បាលខ្មៅ មុនរលាក មុនសាច់', icon: '🔴' },
+  { id: 'acne', nameKm: 'មុខមុន', descKm: 'មុនក្បាលខ្មៅ មុនរលាក មុនកប់សាច់', icon: '🔴' },
   { id: 'dullness', nameKm: 'មុខខ្មៅស្រអាប់', descKm: 'ស្បែកគ្មានពន្លឺ ស្លេកស្លាំង', icon: '🟤' },
   { id: 'pores', nameKm: 'មុខមានរន្ធញើសរីកធំ', descKm: 'រន្ធញើសចំហ ស្បែកខ្លាញ់', icon: '🔵' },
   { id: 'rashes', nameKm: 'មុខរោល', descKm: 'ប្រតិកម្ម អាឡែកស៊ី ងាយក្រហម', icon: '🟠' },
   { id: 'inflammation', nameKm: 'មុខរលាក', descKm: 'រលាកក្រហាយ ស្បែកខូចខាត', icon: '🔥' },
 ];
 
-const ACNE_QUICK_TAGS = ['មុនក្បាលខ្មៅ', 'មុនរលាកក្រហម', 'មុនសាច់', 'មុនអ័រម៉ូន', 'មុនក្បាលស', 'មុនខ្ទុះ'];
+const ACNE_QUICK_TAGS = ['មុនក្បាលខ្មៅ', 'មុនរលាកក្រហម', 'មុនកប់សាច់', 'មុខអង្កាម', 'មុនអ័រម៉ូន', 'មុនក្បាលស', 'មុនខ្ទុះ'];
 
 export const PhoneLogin: React.FC<PhoneLoginProps> = ({
   onOTPSent,
@@ -118,6 +148,7 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
   const [ageRange, setAgeRange] = useState('');
   const [selectedCountryCode, setSelectedCountryCode] = useState('+855');
   const [rawPhone, setRawPhone] = useState('');
+  const [location, setLocation] = useState('');
   const [telegram, setTelegram] = useState('');
   const [selectedConcerns, setSelectedConcerns] = useState<string[]>([]);
   const [acneDetails, setAcneDetails] = useState('');
@@ -135,11 +166,14 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
   const [fbLoading, setFbLoading] = useState(false);
   const [checkingPhone, setCheckingPhone] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [authErrorInfo, setAuthErrorInfo] = useState<(AuthErrorInfo & { phone?: string }) | null>(null);
   const [existingAccountAlert, setExistingAccountAlert] = useState<{ phone: string; rawPhone: string } | null>(null);
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
+  const isRecaptchaInitializingRef = useRef<boolean>(false);
 
   const handleFacebookLogin = async () => {
     setErrorMessage('');
+    setAuthErrorInfo(null);
     setFbLoading(true);
     try {
       await loginWithFacebook();
@@ -155,17 +189,73 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
     }
   };
 
-  useEffect(() => {
-    // Cleanup reCAPTCHA on unmount
-    return () => {
-      if (recaptchaVerifierRef.current) {
-        try {
-          recaptchaVerifierRef.current.clear();
-        } catch {
-          // ignore
-        }
-        recaptchaVerifierRef.current = null;
+  // Clear reCAPTCHA instance safely
+  const resetRecaptcha = () => {
+    if (recaptchaVerifierRef.current) {
+      try {
+        recaptchaVerifierRef.current.clear();
+        console.log('【reCAPTCHA】已清理已有 reCAPTCHA 实例');
+      } catch (err) {
+        // Safe ignore
       }
+      recaptchaVerifierRef.current = null;
+    }
+    const container = document.getElementById('recaptcha-container');
+    if (container) {
+      container.innerHTML = '';
+    }
+  };
+
+  // Initialize RecaptchaVerifier on-demand and reuse it safely
+  const getOrCreateRecaptchaVerifier = (): RecaptchaVerifier => {
+    if (recaptchaVerifierRef.current) {
+      console.log('【reCAPTCHA】复用现有 RecaptchaVerifier 实例');
+      return recaptchaVerifierRef.current;
+    }
+
+    let rootContainer = document.getElementById('recaptcha-container');
+    if (!rootContainer) {
+      rootContainer = document.createElement('div');
+      rootContainer.id = 'recaptcha-container';
+      rootContainer.style.display = 'none';
+      document.body.appendChild(rootContainer);
+    }
+    // Clean out any stale child nodes so grecaptcha never encounters previous renders
+    rootContainer.innerHTML = '';
+
+    // Create a fresh child target element for this verifier instance
+    const targetElement = document.createElement('div');
+    rootContainer.appendChild(targetElement);
+
+    console.log('【reCAPTCHA】初始化全新 RecaptchaVerifier 实例...');
+
+    const verifier = new RecaptchaVerifier(auth, targetElement, {
+      size: 'invisible',
+      callback: (token: any) => {
+        console.log('【reCAPTCHA】验证成功 (Solved):', token ? 'Token received' : 'OK');
+      },
+      'expired-callback': () => {
+        console.warn('【reCAPTCHA】验证已过期 (Expired)');
+        resetRecaptcha();
+        setErrorMessage('reCAPTCHA បានផុតកំណត់។ សូមព្យាយាមម្ដងទៀត។');
+        setAuthErrorInfo({
+          code: 'auth/captcha-check-failed',
+          rawMessage: 'reCAPTCHA token expired',
+          friendlyKm: 'reCAPTCHA បានផុតកំណត់។ សូមព្យាយាមម្ដងទៀត។',
+          friendlyZh: 'reCAPTCHA 验证已过期，请重新点击发送。',
+          hint: 'reCAPTCHA 验证已过期，请重新点击发送验证码。',
+        });
+        setLoading(false);
+      },
+    });
+
+    recaptchaVerifierRef.current = verifier;
+    return verifier;
+  };
+
+  useEffect(() => {
+    return () => {
+      resetRecaptcha();
     };
   }, []);
 
@@ -173,6 +263,7 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
     const val = e.target.value.replace(/[^\d\s-]/g, '');
     setRawPhone(val);
     setErrorMessage('');
+    setAuthErrorInfo(null);
     if (existingAccountAlert) {
       setExistingAccountAlert(null);
     }
@@ -186,14 +277,9 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
       const fullPhoneE164 = formatToE164(selectedCountryCode, rawPhone);
       try {
         setCheckingPhone(true);
-        const exists = await checkPhoneNumberExists(fullPhoneE164);
-        if (exists) {
-          // Switch to ចូលប្រើប្រាស់ (Login) mode directly
-          setAuthMode('login');
-          setExistingAccountAlert({
-            phone: fullPhoneE164,
-            rawPhone,
-          });
+        const existing = await findUserByPhone(fullPhoneE164);
+        if (existing) {
+          console.log("【提示】该手机号客户已存在，系统将更新该客户记录保持单行:", fullPhoneE164);
         }
       } catch {
         // ignore
@@ -231,8 +317,33 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
 
     // 提取纯数字手机号
     const cleanPhone = (formatToE164(selectedCountryCode, rawPhone) || rawPhone || '').replace(/[^0-9]/g, '');
-    if (!cleanPhone) {
+    if (!cleanPhone || cleanPhone.length < 7) {
       alert("Please enter a valid phone number / សូមបញ្ចូលលេខទូរស័ព្ទ");
+      setErrorMessage("សូមបញ្ចូលលេខទូរស័ព្ទឱ្យបានត្រឹមត្រូវ");
+      return;
+    }
+
+    if (!location) {
+      alert("សូមជ្រើសរើសទីតាំង (ខេត្ត/ក្រុង) របស់អ្នក");
+      setErrorMessage("សូមជ្រើសរើសទីតាំង (ខេត្ត/ក្រុង) របស់អ្នក");
+      return;
+    }
+
+    if (!telegram.trim()) {
+      alert("សូមបំពេញលេខ Telegram ឬឈ្មោះ Telegram របស់អ្នក (តម្រូវឱ្យបំពេញ *)");
+      setErrorMessage("សូមបំពេញលេខ Telegram ឬឈ្មោះ Telegram របស់អ្នក (តម្រូវឱ្យបំពេញ *)");
+      return;
+    }
+
+    if (!regPassword || regPassword.length < 6) {
+      alert("សូមកំណត់ពាក្យសម្ងាត់ (Password) យ៉ាងហោចណាស់ 6 ខ្ទង់");
+      setErrorMessage("សូមកំណត់ពាក្យសម្ងាត់ (Password) យ៉ាងហោចណាស់ 6 ខ្ទង់");
+      return;
+    }
+
+    if (regPassword !== regConfirmPassword) {
+      alert("ពាក្យសម្ងាត់ផ្ទៀងផ្ទាត់មិនត្រូវគ្នាទេ សូមពិនិត្យមើលម្តងទៀត");
+      setErrorMessage("ពាក្យសម្ងាត់ផ្ទៀងផ្ទាត់មិនត្រូវគ្នាទេ សូមពិនិត្យមើលម្តងទៀត");
       return;
     }
 
@@ -241,6 +352,7 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
       fullName: (fullName || "").trim() || 'អ្នកប្រើប្រាស់',
       gender: gender || "",
       age: ageRange || "",
+      location: location || "",
       telegram: telegram.trim() || "",
       skinConcerns: selectedConcerns || [],
       acneDetails: selectedConcerns.includes('acne') ? acneDetails.trim() : '',
@@ -254,93 +366,37 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
 
     setLoading(true);
 
-    // 2. 写入 Firestore（SDK + REST API 双保险，带 5 秒超时保护，超时或报错自动回退 localStorage 保底）
+    // 2. 直接使用 Firestore SDK 注册并保存至 users/{auth.currentUser.uid}
     try {
-      const projectId = "lumimei-production-168";
-      const databaseId = "ai-studio-lumimei-7c9bf061-363f-4616-997f-7ddb5ae1f0b3";
-      const firestoreRestUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/users/${cleanPhone}`;
-
-      const restPayload = {
-        fields: {
-          phoneNumber: { stringValue: cleanPhone },
-          fullName: { stringValue: userData.fullName || "" },
-          gender: { stringValue: userData.gender || "" },
-          age: { stringValue: userData.age || "" },
-          telegram: { stringValue: userData.telegram || "" },
-          createdAt: { stringValue: userData.createdAt }
-        }
-      };
-
-      // 1) 原生 Fetch REST API 直写，完全绕过 WebSocket
-      const restWritePromise = fetch(firestoreRestUrl, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(restPayload)
-      }).then(res => {
-        if (res.ok) console.log("【Firestore REST API】写入成功！", cleanPhone);
-        return res;
-      }).catch(err => {
-        console.warn("【Firestore REST API】请求异常:", err);
+      const regProfile = await registerWithPassword({
+        displayName: userData.fullName,
+        fullName: userData.fullName,
+        phoneNumber: cleanPhone,
+        password: regPassword,
+        telegram: userData.telegram,
+        gender: userData.gender || 'ស្រី',
+        ageRange: userData.age || '18-24',
+        location: userData.location,
+        skinConcerns: userData.skinConcerns,
+        acneDetails: userData.acneDetails,
+        preferredLanguage: 'km',
       });
 
-      // 2) Firebase SDK 写入
-      const userDocRef = doc(db, "users", cleanPhone);
-      const sdkWritePromise = setDoc(userDocRef, userData, { merge: true });
-
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Firestore timeout (5s)")), 5000)
-      );
-
-      // 5 秒超时保护，防止网络挂起无限期卡死
-      await Promise.race([
-        Promise.allSettled([restWritePromise, sdkWritePromise]),
-        timeoutPromise
-      ]);
-      
-      console.log("【Firestore Success】数据已写入 users/" + cleanPhone, userData);
-      alert("Success! Data saved to Database / ជោគជ័យ! ទិន្នន័យត្រូវបានរក្សាទុក");
-    } catch (error: any) {
-      console.warn("Firestore Notice / Timeout:", error);
-      alert("Notice: Data saved to local storage (Data secured) / ទិន្នន័យត្រូវបានរក្សាទុកក្នុងទូរស័ព្ទរបស់អ្នកដោយជោគជ័យ");
-    } finally {
-      // 本地状态同步与登录态
-      try {
-        const fallbackProfile: UserProfile = {
-          uid: cleanPhone,
-          displayName: userData.fullName,
-          fullName: userData.fullName,
-          phoneNumber: cleanPhone,
-          telegram: userData.telegram,
-          gender: userData.gender || 'ស្រី',
-          ageRange: userData.age || '18-24',
-          skinConcerns: userData.skinConcerns,
-          preferredLanguage: 'km',
-          role: 'user',
-          consentAccepted: true,
-          consentVersion: '1.0',
-          points: 15,
-          totalSpent: 0,
-          tier: 'normal',
-          createdAt: new Date(),
-        };
-        saveMockUser(fallbackProfile);
-
-        await registerWithPassword({
-          displayName: userData.fullName,
-          fullName: userData.fullName,
-          phoneNumber: cleanPhone,
-          password: regPassword && regPassword.length >= 6 ? regPassword : 'password123',
-          telegram: userData.telegram,
-          gender: userData.gender || 'ស្រី',
-          ageRange: userData.age || '18-24',
-          skinConcerns: userData.skinConcerns,
-          acneDetails: userData.acneDetails,
-          preferredLanguage: 'km',
-        });
-      } catch (localErr) {
-        console.warn("Local sync notice:", localErr);
+      const targetUid = auth.currentUser?.uid || regProfile?.uid;
+      if (targetUid) {
+        const userDocRef = doc(db, 'users', targetUid);
+        await setDoc(userDocRef, {
+          ...userData,
+          uid: targetUid,
+        }, { merge: true });
+        console.log("【Firestore Success】用户资料直接存入 users/" + targetUid);
       }
 
+      alert("Success! Data saved / ជោគជ័យ! ទិន្នន័យត្រូវបានរក្សាទុក");
+    } catch (error: any) {
+      console.warn("Registration notice:", error);
+      alert(error?.message || "Notice: Data saved / ព័ត៌មានត្រូវបានកត់ត្រាទុក");
+    } finally {
       setLoading(false);
 
       if (onFacebookSuccess) {
@@ -363,35 +419,11 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
     return handleSubmit(e);
   };
 
-  const initRecaptcha = (): RecaptchaVerifier => {
-    if (recaptchaVerifierRef.current) {
-      try {
-        recaptchaVerifierRef.current.clear();
-      } catch {
-        // ignore
-      }
-      recaptchaVerifierRef.current = null;
-    }
-
-    const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-      size: 'invisible',
-      callback: () => {
-        // reCAPTCHA solved
-      },
-      'expired-callback': () => {
-        setErrorMessage('reCAPTCHA បានផុតកំណត់។ សូមព្យាយាមម្ដងទៀត។');
-        setLoading(false);
-      },
-    });
-
-    recaptchaVerifierRef.current = verifier;
-    return verifier;
-  };
-
   // Step 2: Create Account using Phone Number (or Direct Login)
   const handleCreateAccountOrLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage('');
+    setAuthErrorInfo(null);
     setExistingAccountAlert(null);
 
     const cleanedDigits = rawPhone.replace(/\D/g, '');
@@ -406,56 +438,92 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
       return;
     }
 
+    // 格式化为严格的标准 E.164 格式 (+855 加去掉开头 0 的手机号码)
     const fullPhoneE164 = formatToE164(selectedCountryCode, rawPhone);
+    console.log('【PhoneLogin】准备向 Firebase 发送 SMS 验证码，目标 E.164 号码:', fullPhoneE164);
 
-    // STRICT BLOCK: If registering, double check if account already exists
-    if (authMode === 'register') {
+    // 【登录姓名校验】如果是登录模式且输入了姓名，先核验姓名与电话号码首次注册信息是否一致
+    const cleanInputName = fullName.trim();
+    if (authMode === 'login' && cleanInputName && !isLikelyPhoneNumber(cleanInputName)) {
       setLoading(true);
       try {
-        const exists = await checkPhoneNumberExists(fullPhoneE164);
-        if (exists) {
-          setExistingAccountAlert({
-            phone: fullPhoneE164,
-            rawPhone,
-          });
-          setRegStep(1);
+        const verifyRes = await verifyCustomerLoginName(fullPhoneE164, cleanInputName);
+        if (!verifyRes.allowed) {
+          if (verifyRes.reason === 'forbidden' || verifyRes.reason === 'server_error') {
+            setErrorMessage('系统错误，请稍后重试');
+          } else if (verifyRes.reason === 'name_mismatch') {
+            setErrorMessage('姓名与注册信息不符,请核实后重试');
+          } else if (verifyRes.reason === 'not_found') {
+            setErrorMessage('未找到该手机号码的客户账户，请核实后重试或前往注册');
+          } else {
+            setErrorMessage(verifyRes.errorZh || '系统错误，请稍后重试');
+          }
           setLoading(false);
           return;
         }
-      } catch {
-        // ignore
+      } catch (err: any) {
+        if (err?.status === 403 || err?.code === 'permission-denied') {
+          setErrorMessage('系统错误，请稍后重试');
+          setLoading(false);
+          return;
+        }
       }
     }
 
-    setLoading(true);
+    await runWithLoading(
+      async () => {
+        // If in registration mode, save the pending profile data in localStorage so VerifyPhone can complete the profile automatically
+        if (authMode === 'register') {
+          const pendingData = {
+            displayName: fullName.trim(),
+            fullName: fullName.trim(),
+            phoneNumber: fullPhoneE164,
+            telegram: telegram.trim(),
+            gender: gender || 'ស្រី',
+            ageRange: ageRange || '',
+            location: location || '',
+            skinConcerns: selectedConcerns,
+            acneDetails: acneDetails.trim(),
+            password: regPassword || undefined,
+            preferredLanguage: 'km',
+          };
+          localStorage.setItem('lumimei_pending_registration', JSON.stringify(pendingData));
+        } else {
+          localStorage.removeItem('lumimei_pending_registration');
+        }
 
-    try {
-      // If in registration mode, save the pending profile data in localStorage so VerifyPhone can complete the profile automatically
-      if (authMode === 'register') {
-        const pendingData = {
-          displayName: fullName.trim(),
-          fullName: fullName.trim(),
-          phoneNumber: fullPhoneE164,
-          telegram: telegram.trim(),
-          gender: gender || 'ស្រី',
-          ageRange: ageRange || '',
-          skinConcerns: selectedConcerns,
-          acneDetails: acneDetails.trim(),
-          password: regPassword || undefined,
-          preferredLanguage: 'km',
-        };
-        localStorage.setItem('lumimei_pending_registration', JSON.stringify(pendingData));
-      } else {
-        localStorage.removeItem('lumimei_pending_registration');
+        // 仅初始化一次，复用已有 RecaptchaVerifier 实例
+        const appVerifier = await getOrCreateRecaptchaVerifier();
+        console.log('【PhoneLogin】正在执行 sendOTP (signInWithPhoneNumber)...');
+        const confirmation = await sendOTP(fullPhoneE164, appVerifier);
+        console.log('【PhoneLogin】sendOTP 成功，准备跳转至 OTP 验证页面');
+        onOTPSent(confirmation, fullPhoneE164);
+      },
+      setLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.warn('【PhoneLogin 发送短信提示】:', {
+            code: err?.code,
+            message: err?.message,
+            rawMessage: err?.rawMessage,
+            hint: err?.hint,
+            phone: fullPhoneE164,
+          });
+
+          // 发送失败时重置 reCAPTCHA，以便下次点击获得全新有效 token，避免死锁
+          resetRecaptcha();
+
+          const diag = explainAuthError(err);
+          setErrorMessage(diag.friendlyKm);
+          setAuthErrorInfo({
+            ...diag,
+            phone: fullPhoneE164,
+          });
+        },
       }
-
-      const appVerifier = initRecaptcha();
-      const confirmation = await sendOTP(fullPhoneE164, appVerifier);
-      onOTPSent(confirmation, fullPhoneE164);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'មិនអាចផ្ញើលេខកូដបានទេ។ សូមព្យាយាមម្ដងទៀត។');
-      setLoading(false);
-    }
+    );
   };
 
   // Direct Login with Password / PIN
@@ -466,37 +534,57 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
 
     const cleanName = fullName.trim();
     if (!cleanName) {
-      setErrorMessage('សូមបញ្ចូលឈ្មោះរបស់អ្នក។');
+      setErrorMessage('សូមបញ្ចូលឈ្មោះ ឬ លេខទូរស័ព្ទរបស់អ្នក (请输入姓名或手机号码)');
       return;
     }
 
     if (!loginPassword) {
-      setErrorMessage('សូមបញ្ចូលពាក្យសម្ងាត់ ឬ លេខ PIN របស់អ្នក។');
+      setErrorMessage('សូមបញ្ចូលពាក្យសម្ងាត់ ឬ លេខ PIN របស់អ្នក (请输入密码或PIN)');
       return;
     }
 
-    setLoading(true);
-
-    try {
-      const loggedProfile = await loginWithPassword(cleanName, loginPassword);
-      if (cleanName.toLowerCase() === 'admin' || loggedProfile?.role === 'admin' || loggedProfile?.role === 'superadmin') {
-        if (onNavigateToAdmin) {
-          onNavigateToAdmin();
-        } else {
-          window.location.hash = '#admin';
+    await runWithLoading(
+      async () => {
+        let targetPhone: string | undefined = undefined;
+        if (isLikelyPhoneNumber(cleanName)) {
+          targetPhone = cleanName.startsWith('+') ? cleanName : formatToE164(selectedCountryCode, cleanName);
+        } else if (rawPhone.trim()) {
+          targetPhone = formatToE164(selectedCountryCode, rawPhone);
         }
-        return;
+
+        const loggedProfile = await loginWithPassword(cleanName, loginPassword, targetPhone);
+        if (cleanName.toLowerCase() === 'admin' || loggedProfile?.role === 'admin' || loggedProfile?.role === 'superadmin') {
+          if (onNavigateToAdmin) {
+            onNavigateToAdmin();
+          } else {
+            window.location.hash = '#admin';
+          }
+          return;
+        }
+        if (onFacebookSuccess) {
+          onFacebookSuccess();
+        } else {
+          onNavigateHome();
+        }
+      },
+      setLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          const errMsg = String(err?.message || '');
+          if (err?.status === 403 || err?.code === 'permission-denied' || errMsg.includes('403') || errMsg.includes('系统错误')) {
+            setErrorMessage('系统错误，请稍后重试');
+          } else if (errMsg.includes('姓名与注册信息不符')) {
+            setErrorMessage('姓名与注册信息不符,请核实后重试');
+          } else if (errMsg.includes('未找到')) {
+            setErrorMessage(errMsg);
+          } else {
+            setErrorMessage(errMsg || 'ឈ្មោះ ឬពាក្យសម្ងាត់/PIN មិនត្រឹមត្រូវទេ។');
+          }
+        },
       }
-      if (onFacebookSuccess) {
-        onFacebookSuccess();
-      } else {
-        onNavigateHome();
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'ឈ្មោះ ឬពាក្យសម្ងាត់/PIN មិនត្រឹមត្រូវទេ។');
-    } finally {
-      setLoading(false);
-    }
+    );
   };
 
   // If user is already logged in with an account, show friendly status and prevent recreating account
@@ -542,9 +630,6 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
 
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4 sm:p-6 py-8">
-      {/* Invisible reCAPTCHA container */}
-      <div id="recaptcha-container"></div>
-
       <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-emerald-100 relative">
         {/* Back Button */}
         <button
@@ -563,11 +648,75 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
           </div>
         )}
 
-        {/* Error Alert */}
-        {errorMessage && (
-          <div className="mb-5 p-3.5 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
-            <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-            <span>{errorMessage}</span>
+        {/* Error Alert with Firebase Diagnostic Details */}
+        {(errorMessage || authErrorInfo) && (
+          <div className="mb-5 p-4 bg-rose-50 border border-rose-200/90 rounded-2xl text-rose-900 text-xs shadow-sm animate-in fade-in space-y-2.5">
+            <div className="flex items-start gap-2.5">
+              <div className="p-1.5 bg-rose-100 text-rose-600 rounded-xl shrink-0 mt-0.5">
+                <AlertCircle className="w-4 h-4" />
+              </div>
+              <div className="space-y-1">
+                <p className="font-bold text-rose-950 font-battambang leading-relaxed text-sm">
+                  {errorMessage || authErrorInfo?.friendlyKm || 'មានបញ្ហាក្នុងការផ្ញើ SMS ឬផ្ទៀងផ្ទាត់'}
+                </p>
+                {authErrorInfo?.friendlyZh && (
+                  <p className="text-rose-800 text-xs font-medium">
+                    {authErrorInfo.friendlyZh}
+                  </p>
+                )}
+                {authErrorInfo?.hint && (
+                  <p className="text-slate-600 text-[11px] leading-relaxed pt-0.5">
+                    👉 <strong>排查建议：</strong>{authErrorInfo.hint}
+                  </p>
+                )}
+                {errorMessage.includes('មិនទាន់បានកំណត់ពាក្យសម្ងាត់') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('login');
+                      setLoginMethod('otp');
+                      const cleanInput = fullName.trim();
+                      if (isLikelyPhoneNumber(cleanInput)) {
+                        setRawPhone(cleanInput);
+                      }
+                      setErrorMessage('');
+                    }}
+                    className="mt-2 w-full py-2 px-3.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>« ប្ដូរទៅផ្ទាំង «លេខកូដ OTP» ដើម្បីចូលប្រើប្រាស់</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Technical Diagnostic Details requested by user for Firebase troubleshooting */}
+            {authErrorInfo && (
+              <div className="pt-2 border-t border-rose-200/70 font-mono text-[11px] bg-white/70 p-2.5 rounded-xl border border-rose-100 text-slate-700 space-y-1.5">
+                <div className="flex items-center justify-between font-sans text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                  <span>Firebase Debug Information</span>
+                  <span className="bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-mono text-[10px]">
+                    {authErrorInfo.code}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400">Error Code: </span>
+                  <span className="font-bold text-rose-700 select-all">{authErrorInfo.code}</span>
+                </div>
+                {authErrorInfo.phone && (
+                  <div>
+                    <span className="text-slate-400">Target Phone (E.164): </span>
+                    <span className="font-bold text-slate-900 select-all">{authErrorInfo.phone}</span>
+                  </div>
+                )}
+                {authErrorInfo.rawMessage && (
+                  <div className="break-all text-[10px] text-slate-600 bg-slate-50 p-1.5 rounded border border-slate-200/60 select-all">
+                    <span className="text-slate-400 font-sans">Raw: </span>
+                    {authErrorInfo.rawMessage}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -735,17 +884,19 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                       ))}
                     </select>
 
-                    <div className="relative flex-1">
+                    <div className="relative flex-1 min-w-0">
                       <input
                         type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
                         value={rawPhone}
                         onChange={handlePhoneChange}
                         onBlur={handlePhoneBlur}
                         placeholder="12 345 678"
-                        className={`w-full px-4 py-3 bg-slate-50 border rounded-2xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 placeholder:font-normal placeholder:text-slate-400 ${
+                        className={`w-full px-3.5 sm:px-4 py-3 bg-slate-50 border rounded-2xl text-base sm:text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 placeholder:font-normal placeholder:text-slate-400 touch-manipulation min-h-[44px] transition-all ${
                           existingAccountAlert
                             ? 'border-red-400 focus:ring-red-400 bg-red-50/40 text-red-950'
-                            : 'border-slate-300 focus:ring-emerald-500'
+                            : 'border-slate-300 focus:ring-emerald-500 focus:border-emerald-500 focus:bg-white'
                         }`}
                       />
                       {checkingPhone && (
@@ -767,19 +918,52 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                   )}
                 </div>
 
-                {/* 2.1 លេខ Telegram (នៅខាងក្រោម លេខទូរស័ព្ទ) */}
+                {/* ទីតាំង (នៅខាងក្រោម លេខទូរស័ព្ទ * - មានទម្រង់ដូច ភេទ) */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>ទីតាំង <span className="text-red-500">*</span></span>
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={location}
+                      onChange={(e) => {
+                        setLocation(e.target.value);
+                        setErrorMessage('');
+                      }}
+                      required
+                      className="w-full px-3 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-xs sm:text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer appearance-none pr-8"
+                    >
+                      <option value="">-- ជ្រើសរើសទីតាំង (ខេត្ត/ក្រុង) --</option>
+                      {LOCATION_OPTIONS.map((loc) => (
+                        <option key={loc} value={loc}>
+                          {loc}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                      <ChevronDown className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* លេខ Telegram */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
                       <Send className="w-3.5 h-3.5 text-sky-600" />
-                      <span>លេខ Telegram</span>
+                      <span>លេខ Telegram ឬ ឈ្មោះតេឡេក្រាម <span className="text-red-500">*</span></span>
                     </span>
-                    <span className="text-[10px] text-slate-400 font-normal">(ស្រេចចិត្ត / @username)</span>
+                    <span className="text-[10px] text-red-500 font-semibold">(តម្រូវឱ្យបំពេញ *)</span>
                   </label>
                   <input
                     type="text"
+                    required
                     value={telegram}
-                    onChange={(e) => setTelegram(e.target.value)}
+                    onChange={(e) => {
+                      setTelegram(e.target.value);
+                      setErrorMessage('');
+                    }}
                     placeholder="ឧ. @username ឬ 012 345 678"
                     className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500 placeholder:text-slate-400"
                   />
@@ -788,24 +972,25 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                   </p>
                 </div>
 
-                {/* 3. ពាក្យសម្ងាត់ (Password) */}
+                {/* ពាក្យសម្ងាត់ (Password) សម្រាប់ចូលប្រើប្រាស់ */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
                       <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>ពាក្យសម្ងាត់ (Password) សម្រាប់ចូលប្រើប្រាស់</span>
+                      <span>ពាក្យសម្ងាត់ (Password) សម្រាប់ចូលប្រើប្រាស់ <span className="text-red-500">*</span></span>
                     </span>
-                    <span className="text-[10px] text-slate-400 font-normal">(ស្រេចចិត្ត - យ៉ាងហោច 6 ខ្ទង់)</span>
+                    <span className="text-[10px] text-red-500 font-semibold">(យ៉ាងហោច 6 ខ្ទង់ *)</span>
                   </label>
                   <div className="relative">
                     <input
                       type={showRegPassword ? 'text' : 'password'}
+                      required
                       value={regPassword}
                       onChange={(e) => {
                         setRegPassword(e.target.value);
                         setErrorMessage('');
                       }}
-                      placeholder="••••••••"
+                      placeholder="បញ្ចូលពាក្យសម្ងាត់យ៉ាងតិច 6 ខ្ទង់"
                       className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:text-slate-400 pr-11 font-mono"
                       disabled={loading}
                     />
@@ -823,49 +1008,48 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                   </p>
                 </div>
 
-                {/* 3.1. បញ្ចូលពាក្យសម្ងាត់ម្តងទៀត (Confirm Password) */}
-                {regPassword && (
-                  <div className="animate-in fade-in slide-in-from-top-1">
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>បញ្ជូលពាក្យសម្ងាត់ម្តងទៀត <span className="text-red-500">*</span></span>
+                {/* បញ្ចូលពាក្យសម្ងាត់ម្តងទៀត (Confirm Password) */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>បញ្ជាក់ពាក្យសម្ងាត់ម្តងទៀត <span className="text-red-500">*</span></span>
+                    </span>
+                    {regConfirmPassword && (
+                      <span className={`text-[11px] font-bold ${
+                        regPassword === regConfirmPassword ? 'text-emerald-600' : 'text-red-500'
+                      }`}>
+                        {regPassword === regConfirmPassword ? '✓ ត្រូវគ្នា' : '✗ មិនទាន់ត្រូវគ្នា'}
                       </span>
-                      {regConfirmPassword && (
-                        <span className={`text-[11px] font-bold ${
-                          regPassword === regConfirmPassword ? 'text-emerald-600' : 'text-red-500'
-                        }`}>
-                          {regPassword === regConfirmPassword ? '✓ ត្រូវគ្នា' : '✗ មិនទាន់ត្រូវគ្នា'}
-                        </span>
-                      )}
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showRegConfirmPassword ? 'text' : 'password'}
-                        value={regConfirmPassword}
-                        onChange={(e) => {
-                          setRegConfirmPassword(e.target.value);
-                          setErrorMessage('');
-                        }}
-                        placeholder="••••••••"
-                        className={`w-full px-4 py-3 bg-slate-50 border rounded-2xl text-sm text-slate-900 focus:outline-none focus:ring-2 placeholder:text-slate-400 pr-11 font-mono ${
-                          regConfirmPassword && regPassword !== regConfirmPassword
-                            ? 'border-red-400 focus:ring-red-400 bg-red-50/20'
-                            : 'border-slate-300 focus:ring-emerald-500'
-                        }`}
-                        disabled={loading}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowRegConfirmPassword(!showRegConfirmPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                        aria-label="Toggle confirm password visibility"
-                      >
-                        {showRegConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
+                    )}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showRegConfirmPassword ? 'text' : 'password'}
+                      required
+                      value={regConfirmPassword}
+                      onChange={(e) => {
+                        setRegConfirmPassword(e.target.value);
+                        setErrorMessage('');
+                      }}
+                      placeholder="បញ្ចូលពាក្យសម្ងាត់ផ្ទៀងផ្ទាត់ម្តងទៀត"
+                      className={`w-full px-4 py-3 bg-slate-50 border rounded-2xl text-sm text-slate-900 focus:outline-none focus:ring-2 placeholder:text-slate-400 pr-11 font-mono ${
+                        regConfirmPassword && regPassword !== regConfirmPassword
+                          ? 'border-red-400 focus:ring-red-400 bg-red-50/20'
+                          : 'border-slate-300 focus:ring-emerald-500'
+                      }`}
+                      disabled={loading}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowRegConfirmPassword(!showRegConfirmPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                      aria-label="Toggle confirm password visibility"
+                    >
+                      {showRegConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
-                )}
+                </div>
 
                 {/* 4. បញ្ហាស្បែកមុខ (Multi-select) */}
                 <div>
@@ -1221,7 +1405,7 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
                     placeholder="បញ្ចូលឈ្មោះរបស់អ្នក"
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:font-normal placeholder:text-slate-400"
+                    className="w-full px-3.5 sm:px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-base sm:text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:bg-white placeholder:font-normal placeholder:text-slate-400 touch-manipulation min-h-[44px] transition-all"
                     disabled={loading}
                   />
                 </div>
@@ -1231,11 +1415,11 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
                     លេខទូរស័ព្ទ
                   </label>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 w-full">
                     <select
                       value={selectedCountryCode}
                       onChange={(e) => setSelectedCountryCode(e.target.value)}
-                      className="px-3 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-xs sm:text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                      className="shrink-0 px-2.5 sm:px-3 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-xs sm:text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 cursor-pointer min-h-[44px] transition-all"
                     >
                       {COUNTRY_CODES.map((c) => (
                         <option key={c.code} value={c.code}>
@@ -1246,12 +1430,13 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
 
                     <input
                       type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
                       value={rawPhone}
                       onChange={handlePhoneChange}
                       placeholder="12 345 678"
-                      className="flex-1 px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:font-normal placeholder:text-slate-400"
+                      className="flex-1 min-w-0 px-3.5 sm:px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-base sm:text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:bg-white placeholder:font-normal placeholder:text-slate-400 touch-manipulation min-h-[44px] transition-all"
                       disabled={loading}
-                      autoFocus
                     />
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1 pl-1">
@@ -1278,11 +1463,11 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
             ) : (
               /* Password / PIN Login Form */
               <form onSubmit={handlePasswordLoginSubmit} className="space-y-4 animate-in fade-in">
-                {/* Name Input (ឈ្មោះ) */}
+                {/* Name or Phone Input */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
                     <User className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>ឈ្មោះ</span>
+                    <span>ឈ្មោះ ឬ លេខទូរស័ព្ទ (姓名或手机号码)</span>
                   </label>
                   <input
                     type="text"
@@ -1291,10 +1476,11 @@ export const PhoneLogin: React.FC<PhoneLoginProps> = ({
                       setFullName(e.target.value);
                       setErrorMessage('');
                     }}
-                    placeholder="បញ្ចូលឈ្មោះរបស់អ្នក"
+                    placeholder="បញ្ចូលឈ្មោះ ឬ លេខទូរស័ព្ទ (如: Kol ឬ 012345678)"
                     className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:font-normal placeholder:text-slate-400"
                     disabled={loading}
                     autoFocus
+                    required
                   />
                 </div>
 

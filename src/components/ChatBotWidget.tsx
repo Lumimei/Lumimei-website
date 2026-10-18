@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, Send, X, Bot, Sparkles, RefreshCw, SendHorizontal, Phone, ExternalLink, ChevronDown, User } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { MessageSquare, Send, X, Bot, Sparkles, RefreshCw, SendHorizontal, Phone, ExternalLink, ChevronDown, User, GripVertical } from 'lucide-react';
 import { Language, Product } from '../types';
 import { getAllStoredProducts } from '../utils/productManager';
 import { GEMINI_ENABLED } from '../config/appConfig';
@@ -25,6 +25,218 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
   const [isLoading, setIsLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Draggable state for floating button
+  const [btnPos, setBtnPos] = useState<{ x: number; y: number }>(() => {
+    try {
+      const saved = localStorage.getItem('lumimei_chatbot_btn_pos');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          const maxX = Math.max(8, (typeof window !== 'undefined' ? window.innerWidth : 400) - 70);
+          const maxY = Math.max(8, (typeof window !== 'undefined' ? window.innerHeight : 800) - 70);
+          return {
+            x: Math.min(Math.max(8, parsed.x), maxX),
+            y: Math.min(Math.max(8, parsed.y), maxY),
+          };
+        }
+      }
+    } catch {}
+    const defaultX = Math.max(
+      8,
+      (typeof window !== 'undefined' ? window.innerWidth : 400) -
+        ((typeof window !== 'undefined' ? window.innerWidth : 400) < 640 ? 68 : 190)
+    );
+    const defaultY = Math.max(
+      8,
+      (typeof window !== 'undefined' ? window.innerHeight : 800) -
+        ((typeof window !== 'undefined' ? window.innerWidth : 400) < 768 ? 144 : 88)
+    );
+    return { x: defaultX, y: defaultY };
+  });
+  const [isDraggingBtn, setIsDraggingBtn] = useState(false);
+  const dragBtnRef = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    currentX: number;
+    currentY: number;
+    hasMoved: boolean;
+  } | null>(null);
+  const btnContainerRef = useRef<HTMLDivElement>(null);
+
+  // Draggable state for modal window on desktop
+  const [modalPos, setModalPos] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingModal, setIsDraggingModal] = useState(false);
+  const dragModalRef = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  const clampBtnPos = useCallback((x: number, y: number) => {
+    const el = btnContainerRef.current;
+    const width = el ? el.offsetWidth : (window.innerWidth < 640 ? 56 : 170);
+    const height = el ? el.offsetHeight : 52;
+    const maxX = Math.max(8, window.innerWidth - width - 8);
+    const maxY = Math.max(8, window.innerHeight - height - 8);
+    return {
+      x: Math.min(Math.max(8, x), maxX),
+      y: Math.min(Math.max(8, y), maxY),
+    };
+  }, []);
+
+  const clampModalPos = useCallback((x: number, y: number) => {
+    const el = modalRef.current;
+    const width = el ? el.offsetWidth : 420;
+    const height = el ? el.offsetHeight : 620;
+    const maxX = Math.max(8, window.innerWidth - width - 8);
+    const maxY = Math.max(8, window.innerHeight - height - 8);
+    return {
+      x: Math.min(Math.max(8, x), maxX),
+      y: Math.min(Math.max(8, y), maxY),
+    };
+  }, []);
+
+  // Clamp positions only on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      setBtnPos((prev) => {
+        const el = btnContainerRef.current;
+        const width = el ? el.offsetWidth : (window.innerWidth < 640 ? 56 : 170);
+        const height = el ? el.offsetHeight : 52;
+        const maxX = Math.max(8, window.innerWidth - width - 8);
+        const maxY = Math.max(8, window.innerHeight - height - 8);
+        const clampedX = Math.min(Math.max(8, prev.x), maxX);
+        const clampedY = Math.min(Math.max(8, prev.y), maxY);
+        if (clampedX === prev.x && clampedY === prev.y) return prev;
+        return { x: clampedX, y: clampedY };
+      });
+
+      setModalPos((prev) => {
+        if (!prev) return null;
+        const el = modalRef.current;
+        const width = el ? el.offsetWidth : 420;
+        const height = el ? el.offsetHeight : 620;
+        const maxX = Math.max(8, window.innerWidth - width - 8);
+        const maxY = Math.max(8, window.innerHeight - height - 8);
+        const clampedX = Math.min(Math.max(8, prev.x), maxX);
+        const clampedY = Math.min(Math.max(8, prev.y), maxY);
+        if (clampedX === prev.x && clampedY === prev.y) return prev;
+        return { x: clampedX, y: clampedY };
+      });
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleBtnPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const currentX = btnPos.x;
+    const currentY = btnPos.y;
+
+    dragBtnRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: currentX,
+      origY: currentY,
+      currentX,
+      currentY,
+      hasMoved: false,
+    };
+    setIsDraggingBtn(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handleBtnPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingBtn || !dragBtnRef.current) return;
+    const dx = e.clientX - dragBtnRef.current.startX;
+    const dy = e.clientY - dragBtnRef.current.startY;
+    if (Math.hypot(dx, dy) > 5) {
+      dragBtnRef.current.hasMoved = true;
+    }
+    const next = clampBtnPos(
+      dragBtnRef.current.origX + dx,
+      dragBtnRef.current.origY + dy
+    );
+    dragBtnRef.current.currentX = next.x;
+    dragBtnRef.current.currentY = next.y;
+    setBtnPos(next);
+  };
+
+  const handleBtnPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingBtn) return;
+    setIsDraggingBtn(false);
+    const hasMoved = dragBtnRef.current?.hasMoved;
+    if (hasMoved && dragBtnRef.current) {
+      const finalPos = { x: dragBtnRef.current.currentX, y: dragBtnRef.current.currentY };
+      try {
+        localStorage.setItem('lumimei_chatbot_btn_pos', JSON.stringify(finalPos));
+      } catch {}
+    } else if (!hasMoved) {
+      setIsOpen(true);
+      setHasUnread(false);
+    }
+    dragBtnRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handleModalHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth < 640) return; // Full-screen on mobile
+    if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) {
+      return;
+    }
+    if (e.button !== 0) return;
+
+    const rect = modalRef.current?.getBoundingClientRect();
+    const currentX = modalPos ? modalPos.x : (rect ? rect.left : window.innerWidth - 440);
+    const currentY = modalPos ? modalPos.y : (rect ? rect.top : window.innerHeight - 640);
+
+    dragModalRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: currentX,
+      origY: currentY,
+      currentX,
+      currentY,
+    };
+    setIsDraggingModal(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handleModalHeaderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingModal || !dragModalRef.current) return;
+    const dx = e.clientX - dragModalRef.current.startX;
+    const dy = e.clientY - dragModalRef.current.startY;
+    const next = clampModalPos(
+      dragModalRef.current.origX + dx,
+      dragModalRef.current.origY + dy
+    );
+    dragModalRef.current.currentX = next.x;
+    dragModalRef.current.currentY = next.y;
+    setModalPos(next);
+  };
+
+  const handleModalHeaderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingModal) return;
+    setIsDraggingModal(false);
+    dragModalRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+  };
 
   const catalog = products && products.length > 0 ? products : getAllStoredProducts();
 
@@ -182,19 +394,34 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
 
   return (
     <>
-      {/* Floating Chat Button */}
-      <div className="fixed bottom-6 right-6 z-50">
-        {!isOpen && (
-          <button
+      {/* Floating Chat Button (Draggable / Movable) */}
+      {!isOpen && (
+        <div
+          ref={btnContainerRef}
+          onPointerDown={handleBtnPointerDown}
+          onPointerMove={handleBtnPointerMove}
+          onPointerUp={handleBtnPointerUp}
+          onPointerCancel={handleBtnPointerUp}
+          style={{
+            position: 'fixed',
+            left: `${btnPos.x}px`,
+            top: `${btnPos.y}px`,
+            touchAction: 'none',
+          }}
+          className={`z-30 select-none ${
+            isDraggingBtn ? 'cursor-grabbing scale-105 shadow-2xl' : 'cursor-grab hover:scale-102'
+          } transition-transform duration-75`}
+          title="អូសដើម្បីប្តូរទីតាំង ឬចុចដើម្បីបើក / 拖拽移动位置或点击打开 / Drag to move or click to open"
+        >
+          <div
             id="lumimei-chatbot-trigger"
-            onClick={() => {
-              setIsOpen(true);
-              setHasUnread(false);
-            }}
-            className="group relative flex items-center gap-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white px-4 py-3 rounded-full shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 active:scale-95"
+            className={`group relative flex items-center gap-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full shadow-xl hover:shadow-2xl transition-shadow ${
+              isDraggingBtn ? 'ring-2 ring-emerald-300' : ''
+            }`}
           >
+            <GripVertical className="w-3.5 h-3.5 opacity-40 text-emerald-100 -ml-1 shrink-0" />
             <div className="relative">
-              <Bot className="w-6 h-6 text-emerald-100 group-hover:rotate-12 transition-transform duration-300" />
+              <Bot className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-100 group-hover:rotate-12 transition-transform duration-300" />
               {hasUnread && (
                 <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
@@ -202,45 +429,67 @@ export const ChatBotWidget: React.FC<ChatBotWidgetProps> = ({ language, onSelect
                 </span>
               )}
             </div>
-            <span className="font-medium text-sm hidden sm:inline-block pr-1">
+            <span className="font-medium text-xs sm:text-sm hidden sm:inline-block pr-1">
               {language === 'km' ? 'Lumimei AI ឆាត' : language === 'zh' ? 'Lumimei AI 客服' : 'Lumimei AI Chat'}
             </span>
-            <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
-          </button>
-        )}
-      </div>
+            <Sparkles className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-300 animate-pulse" />
+          </div>
+        </div>
+      )}
 
-      {/* Floating Chat Window Modal */}
+      {/* Floating Chat Window Modal (Draggable by Header on Desktop) */}
       {isOpen && (
-        <div className="fixed inset-0 sm:inset-auto sm:bottom-6 sm:right-6 sm:w-[420px] sm:h-[620px] z-50 flex flex-col bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl border border-emerald-100 overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-300">
-          {/* Header */}
-          <div className="bg-gradient-to-r from-emerald-700 via-teal-700 to-emerald-800 text-white p-4 flex items-center justify-between shadow-md">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-xs flex items-center justify-center border border-white/20 shadow-inner">
-                <Bot className="w-6 h-6 text-amber-300" />
+        <div
+          ref={modalRef}
+          style={
+            modalPos && typeof window !== 'undefined' && window.innerWidth >= 640
+              ? {
+                  position: 'fixed',
+                  left: `${modalPos.x}px`,
+                  top: `${modalPos.y}px`,
+                }
+              : undefined
+          }
+          className="fixed inset-0 sm:inset-auto sm:bottom-6 sm:right-6 sm:w-[420px] sm:h-[620px] z-50 flex flex-col bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl border border-emerald-100 overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-300"
+        >
+          {/* Header (Draggable on sm+ screens) */}
+          <div
+            onPointerDown={handleModalHeaderPointerDown}
+            onPointerMove={handleModalHeaderPointerMove}
+            onPointerUp={handleModalHeaderPointerUp}
+            onPointerCancel={handleModalHeaderPointerUp}
+            className={`bg-gradient-to-r from-emerald-700 via-teal-700 to-emerald-800 text-white p-3.5 sm:p-4 flex items-center justify-between shadow-md select-none ${
+              isDraggingModal ? 'cursor-grabbing' : 'sm:cursor-grab'
+            }`}
+            title="អូសក្បាលបង្អួចដើម្បីផ្លាស់ទី / 拖拽窗口顶部可移动 / Drag header to reposition window"
+          >
+            <div className="flex items-center gap-2.5">
+              <GripVertical className="hidden sm:inline-block w-4 h-4 text-emerald-200/60 -ml-1 shrink-0" />
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-white/10 backdrop-blur-xs flex items-center justify-center border border-white/20 shadow-inner shrink-0">
+                <Bot className="w-5 h-5 sm:w-6 sm:h-6 text-amber-300" />
               </div>
               <div>
                 <div className="flex items-center gap-1.5">
-                  <h3 className="font-semibold text-base leading-tight">Lumimei AI Assistant</h3>
+                  <h3 className="font-semibold text-sm sm:text-base leading-tight">Lumimei AI Assistant</h3>
                   <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 </div>
-                <p className="text-xs text-emerald-200">
+                <p className="text-[11px] sm:text-xs text-emerald-200">
                   {language === 'km' ? 'ជំនួយការថែរក្សាស្បែក 24/7' : language === 'zh' ? '24/7 护肤美妆智能助手' : '24/7 Skincare Assistant'}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 shrink-0">
               <button
                 onClick={clearChat}
                 title={language === 'km' ? 'ជម្រះការសន្ទនា' : 'Clear chat'}
-                className="p-1.5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition"
+                className="p-1.5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition cursor-pointer"
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
               <button
                 onClick={() => setIsOpen(false)}
-                className="p-1.5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition"
+                className="p-1.5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>

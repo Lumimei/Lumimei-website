@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { Product, Language } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { ProductPromoCard } from './ProductPromoCard';
 
 interface ProductReview {
   id: string;
@@ -144,14 +145,34 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 
   if (!product) return null;
 
-  // Build complete media gallery (strictly preserving custom image order)
+  // Build complete media gallery (strictly preserving custom image order & language preference)
+  const langGallery =
+    language === 'zh' && product.galleryZh && product.galleryZh.filter(Boolean).length > 0
+      ? product.galleryZh
+      : language === 'en' && product.galleryEn && product.galleryEn.filter(Boolean).length > 0
+      ? product.galleryEn
+      : language === 'km' && product.galleryKm && product.galleryKm.filter(Boolean).length > 0
+      ? product.galleryKm
+      : product.gallery;
+
+  const langPrimaryImage =
+    language === 'zh' && product.imageZh
+      ? product.imageZh
+      : language === 'en' && product.imageEn
+      ? product.imageEn
+      : language === 'km' && product.imageKm
+      ? product.imageKm
+      : product.image;
+
   const galleryImages: string[] = [];
-  if (product.gallery && product.gallery.length > 0) {
-    product.gallery.forEach((img) => {
+  if (langGallery && langGallery.length > 0) {
+    langGallery.forEach((img) => {
       if (img && !galleryImages.includes(img)) {
         galleryImages.push(img);
       }
     });
+  } else if (langPrimaryImage) {
+    galleryImages.push(langPrimaryImage);
   } else if (product.image) {
     galleryImages.push(product.image);
   }
@@ -267,13 +288,21 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               {activeImageIndex + 1} / {totalMediaCount}
             </div>
 
-            {/* Best Seller or Special Badge overlay */}
-            {product.isBestSeller && (
-              <div className="absolute bottom-3 left-3 z-10 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-md flex items-center gap-1 uppercase tracking-wider">
-                <Zap className="w-3 h-3 fill-white" />
-                <span>{language === 'km' ? 'លក់ដាច់ខ្លាំង' : 'Best Seller'}</span>
-              </div>
-            )}
+            {/* Promotion ពិសេស or Best Seller Badge overlay */}
+            <div className="absolute bottom-3 left-3 z-10 flex flex-wrap gap-1.5 items-center">
+              {product.isPromotion && (
+                <div className="bg-gradient-to-r from-rose-600 to-pink-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-md flex items-center gap-1 uppercase tracking-wider">
+                  <Sparkles className="w-3 h-3 fill-white" />
+                  <span>{language === 'km' ? '🎁 Promotion ពិសេស' : language === 'zh' ? '🎁 特惠活动' : '🎁 Promotion'}</span>
+                </div>
+              )}
+              {product.isBestSeller && (
+                <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-md flex items-center gap-1 uppercase tracking-wider">
+                  <Zap className="w-3 h-3 fill-white" />
+                  <span>{language === 'km' ? 'លក់ដាច់ខ្លាំង' : 'Best Seller'}</span>
+                </div>
+              )}
+            </div>
           </div>
 
 
@@ -375,6 +404,11 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             {/* 6. Tab Content */}
             {activeTab === 'details' && (
               <div className="space-y-4 text-xs leading-relaxed text-slate-700 pt-1">
+                {/* PROMOTIONAL COPY / 推广文 (ABOVE PRODUCT DESCRIPTION CARDS) */}
+                {product.promoText && product.promoText.enabled !== false && (
+                  <ProductPromoCard promo={product.promoText} />
+                )}
+
                 {/* Description Cards (if available) */}
                 {product.descriptionCards && product.descriptionCards.filter((c) => c.image || c.caption).length > 0 && (
                   <div className="space-y-3">

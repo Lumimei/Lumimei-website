@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   X,
   Gift,
@@ -37,7 +37,13 @@ import {
 import { Language, Product } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { getStoredMissionTasks, DynamicMissionTask } from './AdminTaskEditor';
-import { submitCustomerQuizAnswers, submitPhotoTaskVerification } from '../lib/quizSubmissionService';
+import {
+  submitCustomerQuizAnswers,
+  submitPhotoTaskVerification,
+  isQuizAnswerCorrect,
+  awardPointsToCustomer,
+} from '../lib/quizSubmissionService';
+import { getAllStoredProducts } from '../utils/productManager';
 import serumImg from '../assets/images/lumimei_serum_1785063150378.jpg';
 import coconutOilImg from '../assets/images/lumimei_coconut_oil_1785063164037.jpg';
 import soapImg from '../assets/images/lumimei_soap_1785062880444.jpg';
@@ -48,6 +54,9 @@ interface MyPointsModalProps {
   language: Language;
   onClose: () => void;
   onAddToCart?: (product: Product) => void;
+  onNavigateToPhoneLogin?: (mode?: 'login' | 'register', notice?: string) => void;
+  products?: Product[];
+  onSelectProduct?: (product: Product) => void;
 }
 
 interface MissionTask {
@@ -129,6 +138,18 @@ const QUIZ_QUESTIONS: QuizQuestion[] = [
 
 const MISSION_TASKS: MissionTask[] = [
   {
+    id: 'task-new-customer',
+    titleKm: 'អតិថិជនថ្មី',
+    titleEn: 'New Customer',
+    titleZh: '新客户',
+    points: 15,
+    rewardTextKm: '15ពិន្ទុ',
+    rewardTextEn: '15 points',
+    rewardTextZh: '15 积分',
+    iconType: 'user',
+    requiresPhoto: false,
+  },
+  {
     id: 'task-quiz-game',
     titleKm: 'លេង Game ឆ្លើយសំនួរ',
     titleEn: 'Play Quiz Game',
@@ -207,13 +228,58 @@ const REDEEMABLE_ITEMS: RedeemItem[] = [
   },
 ];
 
+// Helper to determine points required for a catalog product
+const getProductPointsRequired = (p: Product): number => {
+  if (p.pointsCost && p.pointsCost > 0) return p.pointsCost;
+  if (p.id === 'p4' || p.nameKm?.includes('សាប៊ូ (៣ដុំ)')) return 500;
+  if (p.id === 'p5' || p.nameKm?.includes('សាប៊ូ (៦ដុំ)')) return 800;
+  if (p.id === 'p3' || p.nameKm?.includes('ដូង') || p.nameKm?.includes('២ តង់')) return 1000;
+  if (p.id === 'p2' || p.nameKm?.includes('តូច') || p.nameKm?.includes('សេរ៉ូម')) return 1800;
+  if (p.id === 'p1' || p.nameKm?.includes('ធំ') || p.nameKm?.includes('ម៉ាស')) return 2500;
+  return Math.max(500, Math.round((p.priceUsd || 10) * 70));
+};
+
 export const MyPointsModal: React.FC<MyPointsModalProps> = ({
   isOpen,
   language,
   onClose,
   onAddToCart,
+  onNavigateToPhoneLogin,
+  products,
+  onSelectProduct,
 }) => {
-  const { userProfile, updateUserProfile } = useAuth();
+  const { currentUser, userProfile, updateUserProfile } = useAuth();
+
+  // Dynamic Product Catalog (Synchronized with latest centralized catalog)
+  const catalog = useMemo(() => {
+    return products && products.length > 0 ? products : getAllStoredProducts();
+  }, [products]);
+
+  const redeemableRewards = useMemo(() => {
+    return catalog.map((product) => ({
+      product,
+      pointsRequired: getProductPointsRequired(product),
+    }));
+  }, [catalog]);
+
+  const [copiedProductId, setCopiedProductId] = useState<string | null>(null);
+
+  const handleCopyProductLink = (productId: string) => {
+    const url = `${window.location.origin}${window.location.pathname}?product=${productId}`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).catch(() => {});
+    }
+    setCopiedProductId(productId);
+    setTimeout(() => setCopiedProductId(null), 2000);
+    showToast(
+      language === 'km'
+        ? 'បានចម្លងតំណផលិតផលដោយជោគជ័យ!'
+        : language === 'zh'
+        ? '已成功复制商品链接！'
+        : 'Product link copied!',
+      'success'
+    );
+  };
 
   // Navigation SubViews: 'main' | 'quiz' | 'referral'
   const [activeSubView, setActiveSubView] = useState<'main' | 'quiz' | 'referral'>('main');
@@ -227,9 +293,12 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
   const [completedTasks, setCompletedTasks] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('lumimei_completed_mission_tasks');
-      if (saved) {
-        return JSON.parse(saved);
+      let parsed: string[] = saved ? JSON.parse(saved) : [];
+      const hasClaimedNewCustomer = localStorage.getItem('lumimei_claimed_new_customer_bonus') === 'true';
+      if (!hasClaimedNewCustomer) {
+        parsed = parsed.filter((id) => id !== 'task-new-customer');
       }
+      return parsed;
     } catch {
       // ignore
     }
@@ -270,11 +339,13 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
   const [submittingTaskId, setSubmittingTaskId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [justEarnedAnim, setJustEarnedAnim] = useState(false);
+  const [earnedBonusAmount, setEarnedBonusAmount] = useState<number>(15);
   const fileInputRefs = useRef<{ [taskId: string]: HTMLInputElement | null }>({});
 
   // Game ឆ្លើយសំនួរ (Quiz Game) State
   const [quizAnswers, setQuizAnswers] = useState<{ [qId: string]: string }>({});
   const [answeredQuizIds, setAnsweredQuizIds] = useState<string[]>([]);
+  const [answeredOnceQuizIds, setAnsweredOnceQuizIds] = useState<string[]>([]);
   const [savedQuizAnswers, setSavedQuizAnswers] = useState<{ [qId: string]: string }>({});
   const [answeringQuizId, setAnsweringQuizId] = useState<string | null>(null);
   const [pendingQuizQuestions, setPendingQuizQuestions] = useState<{
@@ -286,18 +357,48 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
     setQuizAnswers({});
     const uid = userProfile?.uid || (userProfile as any)?.id || 'guest';
     try {
-      const userSaved = localStorage.getItem(`lumimei_quiz_saved_answers_${uid}`);
+      const userSaved =
+        localStorage.getItem(`lumimei_quiz_saved_answers_${uid}`) ||
+        localStorage.getItem('lumimei_quiz_saved_answers');
       setSavedQuizAnswers(userSaved ? JSON.parse(userSaved) : {});
-      const userPending = localStorage.getItem(`lumimei_quiz_pending_questions_${uid}`);
+      const userPending =
+        localStorage.getItem(`lumimei_quiz_pending_questions_${uid}`) ||
+        localStorage.getItem('lumimei_quiz_pending_questions');
       setPendingQuizQuestions(userPending ? JSON.parse(userPending) : {});
-      const userAns = localStorage.getItem(`lumimei_quiz_answered_ids_${uid}`);
+      const userAns =
+        localStorage.getItem(`lumimei_quiz_answered_ids_${uid}`) ||
+        localStorage.getItem('lumimei_quiz_answered_ids');
       setAnsweredQuizIds(userAns ? JSON.parse(userAns) : []);
+      const userOnce =
+        localStorage.getItem(`lumimei_quiz_answered_once_ids_${uid}`) ||
+        localStorage.getItem('lumimei_quiz_answered_once_ids');
+      setAnsweredOnceQuizIds(userOnce ? JSON.parse(userOnce) : []);
     } catch {
       setSavedQuizAnswers({});
       setPendingQuizQuestions({});
       setAnsweredQuizIds([]);
+      setAnsweredOnceQuizIds([]);
     }
-  }, [userProfile?.uid, (userProfile as any)?.id]);
+
+    // Refresh completedTasks to ensure task-new-customer reflects actual claimed bonus state
+    try {
+      const saved = localStorage.getItem('lumimei_completed_mission_tasks');
+      let parsed: string[] = saved ? JSON.parse(saved) : [];
+      const hasClaimedNewCustomer =
+        userProfile?.claimedNewCustomerBonus === true ||
+        (uid !== 'guest' && localStorage.getItem(`lumimei_claimed_new_customer_bonus_${uid}`) === 'true');
+
+      if (!hasClaimedNewCustomer) {
+        parsed = parsed.filter((id) => id !== 'task-new-customer');
+        localStorage.removeItem('lumimei_claimed_new_customer_bonus');
+      } else {
+        if (!parsed.includes('task-new-customer')) {
+          parsed.push('task-new-customer');
+        }
+      }
+      setCompletedTasks(parsed);
+    } catch {}
+  }, [userProfile?.uid, (userProfile as any)?.id, userProfile?.claimedNewCustomerBonus]);
 
   // Referral Form State
   const [referralForm, setReferralForm] = useState({
@@ -339,6 +440,10 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
           localStorage.getItem(`lumimei_quiz_answered_ids_${uid}`) ||
           localStorage.getItem('lumimei_quiz_answered_ids');
         if (savedAnswered) setAnsweredQuizIds(JSON.parse(savedAnswered));
+        const savedOnce =
+          localStorage.getItem(`lumimei_quiz_answered_once_ids_${uid}`) ||
+          localStorage.getItem('lumimei_quiz_answered_once_ids');
+        if (savedOnce) setAnsweredOnceQuizIds(JSON.parse(savedOnce));
       } catch (err) {
         console.warn(err);
       }
@@ -355,7 +460,24 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
     };
   }, []);
 
-  const currentPoints = userProfile ? userProfile.points : guestPoints;
+  // Helper: In Quiz Game, each question can be answered by the customer ONLY ONCE!
+  const isQuestionAnswered = (qId: string) => {
+    return Boolean(
+      answeredQuizIds.includes(qId) ||
+      answeredOnceQuizIds.includes(qId) ||
+      pendingQuizQuestions[qId]?.answer ||
+      pendingQuizQuestions[qId]?.status ||
+      savedQuizAnswers[qId]
+    );
+  };
+
+  const currentPoints = userProfile
+    ? (userProfile.points && userProfile.points > 0
+        ? userProfile.points
+        : (!userProfile.totalSpent || userProfile.totalSpent === 0)
+        ? 15
+        : (userProfile.points || 0))
+    : guestPoints;
   const displayName = userProfile?.name || (language === 'km' ? 'ភ្ញៀវ' : 'Guest');
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
@@ -419,6 +541,19 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
   };
 
   const handleAnswerQuizQuestion = async (q: QuizQuestion) => {
+    // Constraint: In Quiz Game, a customer can answer each question ONLY ONCE
+    if (isQuestionAnswered(q.id)) {
+      showToast(
+        language === 'km'
+          ? 'សំនួរមួយអតិថិជនអាចឆ្លើយបានតែមួយដងប៉ុណ្ណោះ! អ្នកបានឆ្លើយសំនួរនេះរួចរាល់ហើយ។'
+          : language === 'zh'
+          ? '每道题目只能作答一次！您已回答过此题。'
+          : 'Each question can only be answered once! You have already answered this question.',
+        'error'
+      );
+      return;
+    }
+
     // Only use the user's manual typed response in the input field
     const rawAnswer = (quizAnswers[q.id] || '').trim();
     if (!rawAnswer) {
@@ -429,26 +564,6 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
           ? '请先输入您的回答！'
           : 'Please enter your answer first!',
         'error'
-      );
-      return;
-    }
-
-    if (answeredQuizIds.includes(q.id)) {
-      showToast(
-        language === 'km'
-          ? 'សំនួរនេះត្រូវបាន Admin ផ្ទៀងផ្ទាត់ និងផ្ដល់ពិន្ទុរួចហើយ!'
-          : 'This question is already verified and awarded points!',
-        'success'
-      );
-      return;
-    }
-
-    if (pendingQuizQuestions[q.id]?.status === 'pending') {
-      showToast(
-        language === 'km'
-          ? 'ចម្លើយរបស់អ្នកកំពុងរង់ចាំ Admin ផ្ទៀងផ្ទាត់ (Pending Verify)!'
-          : 'Your answer is already awaiting Admin verification!',
-        'success'
       );
       return;
     }
@@ -481,6 +596,10 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
         ],
       });
 
+      const firstAns = submission.answers[0];
+      const isCorrect = firstAns?.status === 'verified';
+      const ansStatus = isCorrect ? ('verified' as const) : ('pending' as const);
+
       const nextSaved = { ...savedQuizAnswers, [q.id]: rawAnswer };
       setSavedQuizAnswers(nextSaved);
       localStorage.setItem(`lumimei_quiz_saved_answers_${uid}`, JSON.stringify(nextSaved));
@@ -488,20 +607,55 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
 
       const nextPending = {
         ...pendingQuizQuestions,
-        [q.id]: { subId: submission.id, answer: rawAnswer, status: 'pending' as const },
+        [q.id]: {
+          subId: submission.id,
+          answer: rawAnswer,
+          status: ansStatus,
+          verifiedAt: firstAns?.verifiedAt,
+          verifiedBy: firstAns?.verifiedBy,
+        },
       };
       setPendingQuizQuestions(nextPending);
       localStorage.setItem(`lumimei_quiz_pending_questions_${uid}`, JSON.stringify(nextPending));
       localStorage.setItem('lumimei_quiz_pending_questions', JSON.stringify(nextPending));
 
-      showToast(
-        language === 'km'
-          ? `🎉 បានបញ្ជូនចម្លើយសំនួរទី ${q.num} ជោគជ័យ! ចម្លើយបានលោតចូលទំព័រ Admin ដើម្បីអោយ Admin Verify ផ្ដល់ពិន្ទុ (+10) ជូន។`
-          : language === 'zh'
-          ? `🎉 第 ${q.num} 题已成功提交！答案已发送至管理员后台等待审核 (Verify) 赠送 10 积分。`
-          : `🎉 Answer for Q${q.num} submitted! Sent to Admin for verification to award 10 points.`,
-        'success'
-      );
+      // Mark this question as answered once permanently
+      const nextOnce = Array.from(new Set([...answeredOnceQuizIds, q.id]));
+      setAnsweredOnceQuizIds(nextOnce);
+      localStorage.setItem(`lumimei_quiz_answered_once_ids_${uid}`, JSON.stringify(nextOnce));
+      localStorage.setItem('lumimei_quiz_answered_once_ids', JSON.stringify(nextOnce));
+
+      // If correct, record in answeredQuizIds and update points state
+      if (isCorrect) {
+        const nextAnswered = Array.from(new Set([...answeredQuizIds, q.id]));
+        setAnsweredQuizIds(nextAnswered);
+        localStorage.setItem(`lumimei_quiz_answered_ids_${uid}`, JSON.stringify(nextAnswered));
+        localStorage.setItem('lumimei_quiz_answered_ids', JSON.stringify(nextAnswered));
+        setGuestPoints((prev) => prev + 10);
+      }
+
+      // Clear input field for this question
+      setQuizAnswers((prev) => ({ ...prev, [q.id]: '' }));
+
+      if (isCorrect) {
+        showToast(
+          language === 'km'
+            ? `🎉 ចម្លើយសំនួរទី ${q.num} របស់អ្នកត្រឹមត្រូវ! បានបន្ថែម +10 ពិន្ទុក្នុងគណនីរបស់អ្នករួចរាល់!`
+            : language === 'zh'
+            ? `🎉 第 ${q.num} 题回答正确！已为您账户增加 +10 积分！`
+            : `🎉 Correct answer for Q${q.num}! +10 points have been added to your account!`,
+          'success'
+        );
+      } else {
+        showToast(
+          language === 'km'
+            ? `🎉 បានបញ្ជូនចម្លើយសំនួរទី ${q.num} ជោគជ័យ! (រង់ចាំ Admin ពិនិត្យផ្ដល់ +10 ពិន្ទុ)`
+            : language === 'zh'
+            ? `🎉 第 ${q.num} 题已成功提交！等待管理员审核加分。`
+            : `🎉 Answer for Q${q.num} submitted! Recorded and awaiting admin review.`,
+          'success'
+        );
+      }
     } catch {
       showToast('មានបញ្ហាក្នុងការរក្សាទុកចម្លើយ។ សូមព្យាយាមម្តងទៀត។', 'error');
     } finally {
@@ -511,16 +665,13 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
 
   const handleBulkAnswerQuiz = async () => {
     const unansweredQuestions = QUIZ_QUESTIONS.filter(
-      (q) =>
-        !answeredQuizIds.includes(q.id) &&
-        pendingQuizQuestions[q.id]?.status !== 'pending' &&
-        (quizAnswers[q.id] || '').trim() !== ''
+      (q) => !isQuestionAnswered(q.id) && (quizAnswers[q.id] || '').trim() !== ''
     );
 
     if (unansweredQuestions.length === 0) {
       showToast(
         language === 'km'
-          ? 'សូមបំពេញចម្លើយយ៉ាងហោចណាស់មួយសំនួរដើម្បីបញ្ជូន!'
+          ? 'សូមបំពេញចម្លើយយ៉ាងហោចណាស់មួយសំនួរដែលមិនទាន់បានឆ្លើយដើម្បីបញ្ជូន!'
           : 'Please enter an answer for at least one question to submit!',
         'error'
       );
@@ -555,13 +706,39 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
         answers: answersToSubmit,
       });
 
+      const verifiedAnswers = submission.answers.filter((a) => a.status === 'verified');
+      const verifiedCount = verifiedAnswers.length;
+      const verifiedIds = verifiedAnswers.map((a) => a.questionId);
+
       const nextSaved = { ...savedQuizAnswers };
       const nextPending = { ...pendingQuizQuestions };
       unansweredQuestions.forEach((q) => {
         const val = (quizAnswers[q.id] || '').trim();
+        const matchedAns = submission.answers.find((a) => a.questionId === q.id);
+        const ansStatus = matchedAns?.status || 'pending';
         nextSaved[q.id] = val;
-        nextPending[q.id] = { subId: submission.id, answer: val, status: 'pending' };
+        nextPending[q.id] = {
+          subId: submission.id,
+          answer: val,
+          status: ansStatus,
+          verifiedAt: matchedAns?.verifiedAt,
+          verifiedBy: matchedAns?.verifiedBy,
+        };
       });
+
+      const submittedIds = answersToSubmit.map((a) => a.questionId);
+      const nextOnce = Array.from(new Set([...answeredOnceQuizIds, ...submittedIds]));
+      setAnsweredOnceQuizIds(nextOnce);
+      localStorage.setItem(`lumimei_quiz_answered_once_ids_${uid}`, JSON.stringify(nextOnce));
+      localStorage.setItem('lumimei_quiz_answered_once_ids', JSON.stringify(nextOnce));
+
+      if (verifiedCount > 0) {
+        const nextAnswered = Array.from(new Set([...answeredQuizIds, ...verifiedIds]));
+        setAnsweredQuizIds(nextAnswered);
+        localStorage.setItem(`lumimei_quiz_answered_ids_${uid}`, JSON.stringify(nextAnswered));
+        localStorage.setItem('lumimei_quiz_answered_ids', JSON.stringify(nextAnswered));
+        setGuestPoints((prev) => prev + verifiedCount * 10);
+      }
 
       setSavedQuizAnswers(nextSaved);
       setPendingQuizQuestions(nextPending);
@@ -570,14 +747,32 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
       localStorage.setItem(`lumimei_quiz_pending_questions_${uid}`, JSON.stringify(nextPending));
       localStorage.setItem('lumimei_quiz_pending_questions', JSON.stringify(nextPending));
 
-      showToast(
-        language === 'km'
-          ? `🎉 បានបញ្ជូនចម្លើយ ${unansweredQuestions.length} សំនួរជោគជ័យ! ចម្លើយបានលោតចូលទំព័រ Admin ដើម្បីអោយ Admin Verify ផ្ដល់ពិន្ទុ (+10/សំនួរ) ជូន។`
-          : language === 'zh'
-          ? `🎉 已成功提交 ${unansweredQuestions.length} 道题！答案已发送至管理员后台等待审核 (每题 10 积分)。`
-          : `🎉 Submitted ${unansweredQuestions.length} answers! Sent to Admin for verification (10 pts each).`,
-        'success'
-      );
+      // Clear input fields for submitted questions
+      setQuizAnswers((prev) => {
+        const copy = { ...prev };
+        submittedIds.forEach((id) => delete copy[id]);
+        return copy;
+      });
+
+      if (verifiedCount > 0) {
+        showToast(
+          language === 'km'
+            ? `🎉 អ្នកបានឆ្លើយត្រឹមត្រូវ ${verifiedCount} សំនួរ និងទទួលបាន +${verifiedCount * 10} ពិន្ទុបន្ថែមក្នុងគណនីរួចរាល់!`
+            : language === 'zh'
+            ? `🎉 您答对了 ${verifiedCount} 道题，获得 +${verifiedCount * 10} 积分已存入账户！`
+            : `🎉 You answered ${verifiedCount} correctly and received +${verifiedCount * 10} points in your account!`,
+          'success'
+        );
+      } else {
+        showToast(
+          language === 'km'
+            ? `🎉 បានបញ្ជូនចម្លើយ ${unansweredQuestions.length} សំនួរជោគជ័យ! (រង់ចាំ Admin ពិនិត្យផ្ដល់ +10/សំនួរ)`
+            : language === 'zh'
+            ? `🎉 已成功提交 ${unansweredQuestions.length} 道题！等待管理员审核加分。`
+            : `🎉 Submitted ${unansweredQuestions.length} answers! Awaiting admin review for +10 pts each.`,
+          'success'
+        );
+      }
     } catch {
       showToast('មានបញ្ហាក្នុងការរក្សាទុកចម្លើយ។ សូមព្យាយាមម្តងទៀត។', 'error');
     } finally {
@@ -675,6 +870,73 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
   };
 
   const handleClaimTask = async (task: MissionTask) => {
+    // If it is the new customer task, immediately award 15 points into customer's account!
+    const isNewCustomerTask = task.id === 'task-new-customer' || task.titleKm?.includes('អតិថិជនថ្មី');
+    if (isNewCustomerTask) {
+      const uid = userProfile?.uid || (userProfile as any)?.id || 'guest';
+      const isAlreadyClaimed =
+        completedTasks.includes(task.id) ||
+        completedTasks.includes('task-new-customer') ||
+        userProfile?.claimedNewCustomerBonus === true ||
+        (uid !== 'guest' && localStorage.getItem(`lumimei_claimed_new_customer_bonus_${uid}`) === 'true') ||
+        localStorage.getItem('lumimei_claimed_new_customer_bonus') === 'true';
+
+      if (isAlreadyClaimed) {
+        showToast(
+          language === 'km'
+            ? 'អ្នកបានទទួលយក 15ពិន្ទុ អតិថិជនថ្មីរួចរាល់ហើយ (អាចទទួលយកបានតែ ១ ដងប៉ុណ្ណោះ)!'
+            : language === 'zh'
+            ? '您已领取过新客户 15 积分！（每位客户仅限领取一次）'
+            : 'You have already claimed your 15 new customer points! (Only 1 claim per customer)',
+          'error'
+        );
+        return;
+      }
+
+      setSubmittingTaskId(task.id);
+      try {
+        const bonusPoints = task.points || 15;
+        const newPoints = currentPoints + bonusPoints;
+        const nextCompleted = Array.from(new Set([...completedTasks, task.id, 'task-new-customer']));
+
+        setCompletedTasks(nextCompleted);
+        localStorage.setItem('lumimei_completed_mission_tasks', JSON.stringify(nextCompleted));
+        localStorage.setItem('lumimei_claimed_new_customer_bonus', 'true');
+        if (uid !== 'guest') {
+          localStorage.setItem(`lumimei_claimed_new_customer_bonus_${uid}`, 'true');
+        }
+
+        if (userProfile) {
+          await updateUserProfile({
+            points: newPoints,
+            claimedNewCustomerBonus: true,
+          });
+        }
+        localStorage.setItem('lumimei_guest_points', newPoints.toString());
+        setGuestPoints(newPoints);
+        window.dispatchEvent(new Event('pointsUpdated'));
+
+        setEarnedBonusAmount(bonusPoints);
+        setJustEarnedAnim(true);
+        setTimeout(() => setJustEarnedAnim(false), 3000);
+
+        showToast(
+          language === 'km'
+            ? `🎉 អបអរសាទរ! ទទួលបាន +${bonusPoints} ពិន្ទុដោយជោគជ័យ! ពិន្ទុបានលោតចូលក្នុងគណនីរបស់អ្នករួចរាល់។`
+            : language === 'zh'
+            ? `🎉 恭喜！成功领取 +${bonusPoints} 积分！积分已存入您的账户。`
+            : `🎉 Congratulations! Successfully claimed +${bonusPoints} points into your account!`,
+          'success'
+        );
+      } catch (err) {
+        console.error('Failed to claim new customer bonus:', err);
+        showToast('មានបញ្ហាក្នុងការទទួលពិន្ទុ។ សូមព្យាយាមម្តងទៀត។', 'error');
+      } finally {
+        setSubmittingTaskId(null);
+      }
+      return;
+    }
+
     // If it is the quiz game task, transition to dedicated Quiz Page view
     if (task.id === 'task-quiz-game' || task.titleKm?.includes('ឆ្លើយសំនួរ')) {
       setActiveSubView('quiz');
@@ -827,19 +1089,33 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
     }
   };
 
-  const handleRedeemItem = async (item: RedeemItem) => {
-    if (currentPoints < item.pointsRequired) {
+  const handleRedeemItem = async (product: Product, pointsRequired: number) => {
+    if ((product.stock ?? 0) <= 0) {
       showToast(
         language === 'km'
-          ? `ពិន្ទុរបស់អ្នកមិនគ្រប់គ្រាន់ទេ! អ្នកត្រូវការ ${item.pointsRequired} ពិន្ទុ`
-          : `Insufficient points! You need ${item.pointsRequired} points.`,
+          ? 'ផលិតផលនេះអស់ពីស្តុកហើយ!'
+          : language === 'zh'
+          ? '该商品暂时缺货！'
+          : 'This product is out of stock!',
+        'error'
+      );
+      return;
+    }
+
+    if (currentPoints < pointsRequired) {
+      showToast(
+        language === 'km'
+          ? `ពិន្ទុរបស់អ្នកមិនគ្រប់គ្រាន់ទេ! អ្នកត្រូវការ ${pointsRequired} ពិន្ទុ`
+          : language === 'zh'
+          ? `积分不足！您需要 ${pointsRequired} 积分`
+          : `Insufficient points! You need ${pointsRequired} points.`,
         'error'
       );
       return;
     }
 
     try {
-      const newPoints = currentPoints - item.pointsRequired;
+      const newPoints = currentPoints - pointsRequired;
       if (userProfile) {
         await updateUserProfile({ points: newPoints });
       } else {
@@ -848,41 +1124,38 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
         window.dispatchEvent(new Event('pointsUpdated'));
       }
 
+      const prodName =
+        language === 'km'
+          ? product.nameKm || product.name
+          : language === 'zh'
+          ? product.nameZh || product.name
+          : product.name;
+
       if (onAddToCart) {
         const productToAdd: Product = {
-          id: `redeem-${item.id}-${Date.now()}`,
-          name: item.nameEn,
-          nameKm: item.nameKm,
-          nameZh: item.nameZh,
-          brand: 'Lumimei',
-          category: 'ថែរក្សាស្បែក',
+          ...product,
+          id: `redeem-${product.id}-${Date.now()}`,
           priceUsd: 0,
           priceKhr: 0,
-          pointsCost: item.pointsRequired,
-          rating: 5,
-          reviewCount: 1,
-          image: item.image,
-          skinTypes: ['all'],
-          skinConcerns: [],
-          description: item.descriptionKm,
-          descriptionKm: item.descriptionKm,
-          howToUse: 'ប្រើប្រាស់តាមការណែនាំ',
-          howToUseKm: 'ប្រើប្រាស់តាមការណែនាំ',
-          ingredients: 'Lumimei Active Formula',
-          stock: 100,
-          volume: '1 item',
+          pointsCost: pointsRequired,
+          originalPriceUsd: product.priceUsd,
         };
         onAddToCart(productToAdd);
       }
 
       showToast(
         language === 'km'
-          ? `បានប្តូរ "${item.nameKm}" និងបន្ថែមទៅក្នុងកន្ត្រកទំនិញដោយឥតគិតថ្លៃ (FREE)!`
-          : `Redeemed "${item.nameEn}" to your shopping cart for FREE!`,
+          ? `បានប្តូរ "${prodName}" និងបន្ថែមទៅក្នុងកន្ត្រកទំនិញដោយឥតគិតថ្លៃ (FREE)!`
+          : language === 'zh'
+          ? `已成功兑换“${prodName}”并免费添加至购物车！`
+          : `Redeemed "${prodName}" to your shopping cart for FREE!`,
         'success'
       );
     } catch {
-      showToast('មានបញ្ហាក្នុងការប្តូរយករង្វាន់។ សូមព្យាយាមម្តងទៀត។', 'error');
+      showToast(
+        language === 'km' ? 'មានបញ្ហាក្នុងការប្តូរយករង្វាន់។ សូមព្យាយាមម្តងទៀត។' : 'Failed to redeem reward. Please try again.',
+        'error'
+      );
     }
   };
 
@@ -979,274 +1252,347 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
             </div>
           )}
 
-          {/* ========================================================================= */}
-          {/* SUB-VIEW 1: DEDICATED QUIZ GAME PAGE (ទំព័រឆ្លើយសំនួរ) */}
-          {/* ========================================================================= */}
-          {activeSubView === 'quiz' && (
-            <div className="space-y-4 animate-in fade-in duration-300">
-              {/* Back to Points Header Bar */}
-              <div className="flex items-center justify-between gap-2 pb-1">
+          {/* Require Account Notification for Guests */}
+          {!userProfile && !currentUser && (
+            <div className="p-5 bg-gradient-to-br from-amber-50 to-emerald-50 border border-amber-200/90 rounded-3xl text-center space-y-4 shadow-sm my-1 animate-in fade-in">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-400 text-white flex items-center justify-center mx-auto shadow-md shadow-amber-500/20">
+                <Gift className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5 max-w-sm mx-auto">
+                <h4 className="text-base font-bold text-slate-900 font-battambang">
+                  {language === 'km'
+                    ? 'សូមបង្កើតគណនីជាមុនសិន ដើម្បីទទួលបានរង្វាន់!'
+                    : language === 'zh'
+                    ? '请先注册创建账号以使用积分与专属奖励！'
+                    : 'Please Create an Account First to Access Rewards!'}
+                </h4>
+                <p className="text-xs text-slate-600 leading-relaxed font-battambang">
+                  {language === 'km'
+                    ? 'ដើម្បីសន្សំពិន្ទុ ឆ្លើយសំនួរយករង្វាន់ និងប្តូរយកផលិតផល Lumimei ដោយឥតគិតថ្លៃ សូមចុះឈ្មោះបង្កើតគណនីផ្ទាល់ខ្លួនរបស់អ្នក។'
+                    : language === 'zh'
+                    ? '为了保存您的积分进度、参与答题互动并免费兑换正品护肤好礼，请先注册创建您的专属账号。'
+                    : 'To save your points, submit quiz answers, and redeem free skincare, please register for your personal account.'}
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 max-w-xs mx-auto pt-1">
                 <button
                   type="button"
-                  onClick={() => setActiveSubView('main')}
-                  className="inline-flex items-center gap-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3.5 py-2 rounded-xl transition cursor-pointer shadow-2xs"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>{language === 'km' ? 'ត្រឡប់ទៅផ្ទាំងសន្សំពិន្ទុ' : 'Back to Points'}</span>
-                </button>
-
-                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-100 border border-purple-300 text-xs font-extrabold text-purple-900 shadow-2xs">
-                  <Trophy className="w-4 h-4 text-amber-500" />
-                  <span>
-                    {language === 'km' ? 'ឆ្លើយបាន៖ ' : 'Answered: '}
-                    <strong className="text-emerald-700">{answeredQuizIds.length}</strong>/{QUIZ_QUESTIONS.length}
-                  </span>
-                </div>
-              </div>
-
-              {/* Quiz Banner Card */}
-              <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-purple-950 text-white rounded-3xl p-4 sm:p-5 border border-purple-500/40 shadow-xl overflow-hidden relative">
-                <div className="absolute -top-12 -right-12 w-36 h-36 bg-purple-500/20 rounded-full blur-2xl pointer-events-none" />
-                <div className="absolute -bottom-10 -left-10 w-36 h-36 bg-emerald-500/15 rounded-full blur-2xl pointer-events-none" />
-
-                <div className="relative z-10 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-purple-500 via-indigo-500 to-pink-500 flex items-center justify-center text-white shadow-md shrink-0">
-                      <Gamepad2 className="w-6 h-6 animate-pulse" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h4 className="text-base sm:text-lg font-extrabold text-white">
-                          {language === 'km' ? 'ទំព័រឆ្លើយសំនួរ Lumimei' : language === 'zh' ? 'Lumimei 问答挑战' : 'Lumimei Quiz Q&A Page'}
-                        </h4>
-                        <span className="text-[10px] bg-amber-400 text-amber-950 font-black px-2 py-0.5 rounded-full uppercase tracking-wider shadow-2xs">
-                          +10 {language === 'km' ? 'ពិន្ទុក្នុង ១សំនួរ' : language === 'zh' ? '积分/题' : 'pts / question'}
-                        </span>
-                      </div>
-                      <p className="text-xs text-purple-200 mt-0.5">
-                        {language === 'km'
-                          ? 'ឆ្លើយត្រូវមួយសំនួរទទួលបាន +១០ ពិន្ទុ (សរុប ៦០ ពិន្ទុ)! ចូលបំពេញចម្លើយដោយផ្ទាល់ដៃ។'
+                  onClick={() => {
+                    onClose();
+                    if (onNavigateToPhoneLogin) {
+                      onNavigateToPhoneLogin(
+                        'register',
+                        language === 'km'
+                          ? '🎉 សូមបង្កើតគណនីថ្មីជាមុនសិន ដើម្បីទទួលបានរង្វាន់ សន្សំពិន្ទុ និងប្តូរយកផលិតផល Lumimei ដោយឥតគិតថ្លៃ!'
                           : language === 'zh'
-                          ? '每答对一题获得 +10 积分（共 60 积分）！请手动输入您的答案。'
-                          : 'Earn +10 points per question (total 60 pts)! Please type your answers.'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Progress Bar */}
-                  <div className="pt-2 space-y-1.5 border-t border-purple-400/20">
-                    <div className="flex items-center justify-between text-xs text-purple-200">
-                      <span className="font-semibold">{language === 'km' ? 'វឌ្ឍនភាពចម្លើយ' : language === 'zh' ? '答题进度' : 'Quiz Progress'}</span>
-                      <span className="font-extrabold text-amber-300">
-                        {answeredQuizIds.length === QUIZ_QUESTIONS.length
-                          ? language === 'km' ? '🎉 ឆ្លើយចប់គ្រប់សំនួរ (+60 ពិន្ទុ)' : language === 'zh' ? '🎉 全部完成 (+60 积分)' : 'Completed (+60 pts)'
-                          : `${answeredQuizIds.length}/${QUIZ_QUESTIONS.length} (${Math.round((answeredQuizIds.length / QUIZ_QUESTIONS.length) * 100)}%)`}
-                      </span>
-                    </div>
-                    <div className="w-full h-2.5 bg-purple-950/80 rounded-full overflow-hidden border border-purple-700/40">
-                      <div
-                        className="h-full bg-gradient-to-r from-emerald-400 via-teal-300 to-amber-300 rounded-full transition-all duration-500"
-                        style={{ width: `${(answeredQuizIds.length / QUIZ_QUESTIONS.length) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 6 Questions List */}
-              <div className="space-y-3">
-                {QUIZ_QUESTIONS.map((q) => {
-                  const isVerified =
-                    answeredQuizIds.includes(q.id) || pendingQuizQuestions[q.id]?.status === 'verified';
-                  const isPending = !isVerified && pendingQuizQuestions[q.id]?.status === 'pending';
-                  const isRejected = !isVerified && pendingQuizQuestions[q.id]?.status === 'rejected';
-
-                  const currentVal = isVerified || isPending
-                    ? pendingQuizQuestions[q.id]?.answer || savedQuizAnswers[q.id] || quizAnswers[q.id] || ''
-                    : quizAnswers[q.id] || '';
-
-                  const isSubmittingThis = answeringQuizId === q.id;
-                  const questionText =
-                    language === 'km' ? q.questionKm : language === 'zh' ? q.questionZh : q.questionEn;
-
-                  return (
-                    <div
-                      key={q.id}
-                      className={`p-4 rounded-2xl border transition-all shadow-2xs ${
-                        isVerified
-                          ? 'bg-emerald-50/60 border-emerald-300'
-                          : isPending
-                          ? 'bg-amber-50/60 border-amber-300 ring-1 ring-amber-100'
-                          : isRejected
-                          ? 'bg-rose-50/60 border-rose-300'
-                          : 'bg-white border-slate-200 hover:border-purple-300'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2 mb-2.5">
-                        <h5 className="text-xs sm:text-sm font-extrabold text-slate-900 leading-snug flex items-center gap-1.5">
-                          <span className="w-6 h-6 rounded-lg bg-purple-100 text-purple-900 text-xs font-black flex items-center justify-center shrink-0">
-                            {q.num}
-                          </span>
-                          <span>{questionText.replace(/^[០-៩0-9]\.\s*/, '')}</span>
-                        </h5>
-
-                        {/* Status Badges */}
-                        {isVerified && (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
-                            <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>{language === 'km' ? 'Admin ផ្ទៀងផ្ទាត់រួច (+10)' : language === 'zh' ? '审核通过 (+10 积分)' : 'Verified (+10 pts)'}</span>
-                          </span>
-                        )}
-
-                        {isPending && (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 shrink-0 animate-pulse">
-                            <Clock className="w-3.5 h-3.5 text-amber-600" />
-                            <span>{language === 'km' ? 'រង់ចាំ Admin ផ្ទៀងផ្ទាត់' : language === 'zh' ? '等待管理员审核' : 'Pending Verify'}</span>
-                          </span>
-                        )}
-
-                        {isRejected && (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 border border-rose-300 shrink-0">
-                            <XCircle className="w-3.5 h-3.5 text-rose-600" />
-                            <span>{language === 'km' ? 'ឆ្លើយម្តងទៀត' : language === 'zh' ? '重新作答' : 'Revise'}</span>
-                          </span>
-                        )}
-
-                        {!isVerified && !isPending && !isRejected && (
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-purple-100 text-purple-900 border border-purple-200 shrink-0">
-                            +10 {language === 'km' ? 'ពិន្ទុ' : language === 'zh' ? '积分' : 'pts'}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Verified Answer Display */}
-                      {isVerified && (
-                        <div className="bg-emerald-100/60 border border-emerald-300 rounded-xl p-3 text-xs text-emerald-950 flex items-start gap-2.5">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[11px] text-emerald-800 font-bold mb-0.5">
-                              {language === 'km' ? 'ចម្លើយរបស់អ្នក (បានទទួល +10 ពិន្ទុ)៖' : language === 'zh' ? '您的回答（已获得 +10 积分）：' : 'Your Answer (Awarded +10 pts):'}
-                            </p>
-                            <p className="text-xs text-slate-900 font-semibold break-words italic">
-                              "{currentVal}"
-                            </p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Pending Verification Display */}
-                      {isPending && (
-                        <div className="bg-amber-100/70 border border-amber-300 rounded-xl p-3 text-xs text-amber-950 flex items-start gap-2.5">
-                          <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between mb-0.5">
-                              <p className="text-[11px] text-amber-900 font-extrabold">
-                                {language === 'km' ? 'ចម្លើយរបស់អ្នកកំពុងរង់ចាំ Admin Verify ៖' : 'Submitted & Awaiting Admin Verify:'}
-                              </p>
-                              <span className="text-[10px] text-amber-700 font-bold">លោតចូលទំព័រ Admin រួចរាល់</span>
-                            </div>
-                            <p className="text-xs text-slate-900 font-semibold break-words italic bg-white/70 p-2 rounded-lg border border-amber-200 mb-1.5">
-                              "{currentVal}"
-                            </p>
-                            <p className="text-[10px] text-amber-800">
-                              {language === 'km'
-                                ? 'Admin នឹងពិនិត្យផ្ទៀងផ្ទាត់ក្នុងពេលឆាប់ៗ ដើម្បីផ្ដល់ពិន្ទុជូនអ្នក!'
-                                : 'Admin will review and approve points shortly!'}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Rejected Notice Display */}
-                      {isRejected && (
-                        <div className="mb-2 bg-rose-100 border border-rose-300 rounded-xl p-2.5 text-xs text-rose-900 flex items-start gap-2">
-                          <XCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                          <div className="flex-1 text-[11px]">
-                            <span className="font-bold">Admin បានបដិសេធ៖ </span>
-                            <span>{pendingQuizQuestions[q.id]?.reason || 'សូមឆ្លើយឱ្យបានត្រឹមត្រូវឡើងវិញ'}</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Answer Input when Not Verified & Not Pending: Strictly blank for user manual entry */}
-                      {!isVerified && !isPending && (
-                        <div className="space-y-2">
-                          <div className="flex flex-col sm:flex-row gap-2">
-                            <textarea
-                              rows={2}
-                              placeholder={
-                                language === 'km'
-                                  ? 'សូមបញ្ចូលចម្លើយរបស់អ្នកនៅទីនេះ...'
-                                  : language === 'zh'
-                                  ? '请输入您的回答...'
-                                  : 'Type your answer here...'
-                              }
-                              value={quizAnswers[q.id] || ''}
-                              onChange={(e) =>
-                                setQuizAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
-                              }
-                              className="flex-1 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white focus:ring-2 focus:ring-purple-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 placeholder:text-slate-400 outline-none transition resize-none"
-                            />
-                            <button
-                              type="button"
-                              disabled={isSubmittingThis || !(quizAnswers[q.id] || '').trim()}
-                              onClick={() => handleAnswerQuizQuestion(q)}
-                              className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shrink-0 shadow-2xs active:scale-95 cursor-pointer disabled:opacity-50 sm:self-stretch"
-                            >
-                              {isSubmittingThis ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : (
-                                <Send className="w-3.5 h-3.5 text-amber-300" />
-                              )}
-                              <span>{language === 'km' ? 'បញ្ជូន' : language === 'zh' ? '提交' : 'Submit'}</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Bulk Submit & Back Actions */}
-              <div className="pt-2 flex flex-col sm:flex-row gap-2">
-                {answeredQuizIds.length < QUIZ_QUESTIONS.length && (
-                  <button
-                    type="button"
-                    disabled={answeringQuizId === 'bulk_submit'}
-                    onClick={handleBulkAnswerQuiz}
-                    className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md transition active:scale-98 cursor-pointer"
-                  >
-                    {answeringQuizId === 'bulk_submit' ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>{language === 'km' ? 'កំពុងបញ្ជូន...' : 'Submitting...'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 text-amber-300" />
-                        <span>
-                          {language === 'km'
-                            ? 'បញ្ជូនចម្លើយទាំងអស់ (+10 ពិន្ទុក្នុង ១ សំនួរ)'
-                            : language === 'zh'
-                            ? '一键提交所有已填答案 (每题 +10 积分)'
-                            : 'Submit All Answers (+10 pts each)'}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                )}
-
+                          ? '🎉 请先注册创建账号，即可参与赢取积分与兑换 Lumimei 专属奖励！'
+                          : '🎉 Please create an account first to unlock rewards, earn points, and redeem free Lumimei products!'
+                      );
+                    }
+                  }}
+                  className="w-full py-2.5 px-4 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-2xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>
+                    {language === 'km' ? 'បង្កើតគណនីថ្មីឥឡូវនេះ' : language === 'zh' ? '立即注册创建账号' : 'Create Account Now'}
+                  </span>
+                </button>
                 <button
                   type="button"
-                  onClick={() => setActiveSubView('main')}
-                  className="py-3 px-5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs sm:text-sm transition cursor-pointer"
+                  onClick={() => {
+                    onClose();
+                    if (onNavigateToPhoneLogin) {
+                      onNavigateToPhoneLogin('login');
+                    }
+                  }}
+                  className="w-full py-2 px-3 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-2xl border border-slate-200 transition cursor-pointer"
                 >
-                  {language === 'km' ? 'ត្រឡប់ទៅផ្ទាំងដើម' : 'Back to Main'}
+                  <span>
+                    {language === 'km' ? 'ចូលប្រើប្រាស់' : language === 'zh' ? '已有账号登录' : 'Log In'}
+                  </span>
                 </button>
               </div>
             </div>
           )}
+
+          {/* ========================================================================= */}
+          {/* SUB-VIEW 1: DEDICATED QUIZ GAME PAGE (ទំព័រឆ្លើយសំនួរ) */}
+          {/* ========================================================================= */}
+          {activeSubView === 'quiz' && (() => {
+            const answeredCount = QUIZ_QUESTIONS.filter((q) => isQuestionAnswered(q.id)).length;
+            const totalQuestions = QUIZ_QUESTIONS.length;
+
+            return (
+              <div className="space-y-4 animate-in fade-in duration-300">
+                {/* Back to Points Header Bar */}
+                <div className="flex items-center justify-between gap-2 pb-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubView('main')}
+                    className="inline-flex items-center gap-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3.5 py-2 rounded-xl transition cursor-pointer shadow-2xs"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    <span>{language === 'km' ? 'ត្រឡប់ទៅផ្ទាំងសន្សំពិន្ទុ' : 'Back to Points'}</span>
+                  </button>
+
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-100 border border-purple-300 text-xs font-extrabold text-purple-900 shadow-2xs">
+                    <Trophy className="w-4 h-4 text-amber-500" />
+                    <span>
+                      {language === 'km' ? 'ឆ្លើយបាន៖ ' : 'Answered: '}
+                      <strong className="text-emerald-700">{answeredCount}</strong>/{totalQuestions}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 6 Questions List */}
+                <div className="space-y-3">
+                  {QUIZ_QUESTIONS.map((q) => {
+                    const hasAnswered = isQuestionAnswered(q.id);
+                    const isVerified =
+                      answeredQuizIds.includes(q.id) || pendingQuizQuestions[q.id]?.status === 'verified';
+                    const isPending = !isVerified && pendingQuizQuestions[q.id]?.status === 'pending';
+                    const isRejected = !isVerified && pendingQuizQuestions[q.id]?.status === 'rejected';
+
+                    const currentVal =
+                      pendingQuizQuestions[q.id]?.answer || savedQuizAnswers[q.id] || quizAnswers[q.id] || '';
+
+                    const isSubmittingThis = answeringQuizId === q.id;
+                    const questionText =
+                      language === 'km' ? q.questionKm : language === 'zh' ? q.questionZh : q.questionEn;
+
+                    return (
+                      <div
+                        key={q.id}
+                        className={`p-4 rounded-2xl border transition-all shadow-2xs ${
+                          isVerified
+                            ? 'bg-emerald-50/60 border-emerald-300'
+                            : isPending
+                            ? 'bg-amber-50/60 border-amber-300 ring-1 ring-amber-100'
+                            : isRejected
+                            ? 'bg-rose-50/60 border-rose-300'
+                            : hasAnswered
+                            ? 'bg-amber-50/40 border-amber-200'
+                            : 'bg-white border-slate-200 hover:border-purple-300'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-2.5">
+                          <h5 className="text-xs sm:text-sm font-extrabold text-slate-900 leading-snug flex items-center gap-1.5">
+                            <span className="w-6 h-6 rounded-lg bg-purple-100 text-purple-900 text-xs font-black flex items-center justify-center shrink-0">
+                              {q.num}
+                            </span>
+                            <span>{questionText.replace(/^[០-៩0-9]\.\s*/, '')}</span>
+                          </h5>
+
+                          {/* Status Badges */}
+                          {isVerified && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>{language === 'km' ? 'ត្រឹមត្រូវ (+10)' : language === 'zh' ? '正确 (+10 积分)' : 'Correct (+10 pts)'}</span>
+                            </span>
+                          )}
+
+                          {isPending && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 shrink-0 animate-pulse">
+                              <Clock className="w-3.5 h-3.5 text-amber-600" />
+                              <span>{language === 'km' ? 'បានឆ្លើយរួច (រង់ចាំពិនិត្យ)' : language === 'zh' ? '已作答（等待审核）' : 'Answered (Pending Review)'}</span>
+                            </span>
+                          )}
+
+                          {isRejected && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 border border-rose-300 shrink-0">
+                              <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                              <span>{language === 'km' ? 'បានឆ្លើយរួច (មិនត្រឹមត្រូវ)' : language === 'zh' ? '已作答（不正确）' : 'Answered (Incorrect)'}</span>
+                            </span>
+                          )}
+
+                          {hasAnswered && !isVerified && !isPending && !isRejected && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-amber-600" />
+                              <span>{language === 'km' ? 'បានឆ្លើយរួចរាល់' : language === 'zh' ? '已作答' : 'Answered'}</span>
+                            </span>
+                          )}
+
+                          {!hasAnswered && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-purple-100 text-purple-900 border border-purple-200 shrink-0">
+                              +10 {language === 'km' ? 'ពិន្ទុ' : language === 'zh' ? '积分' : 'pts'}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Verified Answer Display */}
+                        {isVerified && (
+                          <div className="bg-emerald-100/60 border border-emerald-300 rounded-xl p-3 text-xs text-emerald-950 flex items-start gap-2.5">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[11px] text-emerald-800 font-bold mb-0.5">
+                                {language === 'km' ? 'ចម្លើយរបស់អ្នក (បានទទួល +10 ពិន្ទុ)៖' : language === 'zh' ? '您的回答（已获得 +10 积分）：' : 'Your Answer (Awarded +10 pts):'}
+                              </p>
+                              <p className="text-xs text-slate-900 font-semibold break-words italic">
+                                "{currentVal}"
+                              </p>
+                              <p className="text-[10px] text-emerald-700 font-medium mt-1">
+                                {language === 'km' ? '✓ អ្នកបានឆ្លើយសំនួរនេះត្រឹមត្រូវរួចរាល់ (សំនួរមួយអាចឆ្លើយបានតែ ១ ដង)' : '✓ Correct! (1 attempt per question)'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Pending Review Display */}
+                        {isPending && (
+                          <div className="bg-amber-100/70 border border-amber-300 rounded-xl p-3 text-xs text-amber-950 flex items-start gap-2.5">
+                            <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between mb-0.5">
+                                <p className="text-[11px] text-amber-900 font-extrabold">
+                                  {language === 'km' ? 'ចម្លើយរបស់អ្នកកំពុងរង់ចាំ Admin ពិនិត្យ ៖' : 'Submitted & Awaiting Admin Review:'}
+                                </p>
+                                <span className="text-[10px] text-amber-700 font-bold">លោតចូលទំព័រ Admin រួចរាល់</span>
+                              </div>
+                              <p className="text-xs text-slate-900 font-semibold break-words italic bg-white/70 p-2 rounded-lg border border-amber-200 mb-1.5">
+                                "{currentVal}"
+                              </p>
+                              <p className="text-[10px] text-amber-800">
+                                {language === 'km'
+                                  ? 'អ្នកបានឆ្លើយសំនួរនេះរួចហើយ (សំនួរមួយអាចឆ្លើយបានតែ ១ ដង)។ Admin នឹងពិនិត្យផ្ដល់ពិន្ទុជូនអ្នក!'
+                                  : 'Answer recorded (1 attempt only). Admin will review and award points shortly!'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Rejected Notice Display (Locked - Cannot answer again as per rule: 1 attempt per question) */}
+                        {isRejected && (
+                          <div className="bg-rose-100/80 border border-rose-300 rounded-xl p-3 text-xs text-rose-950 flex items-start gap-2.5">
+                            <XCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[11px] text-rose-800 font-bold mb-0.5">
+                                {language === 'km' ? 'ចម្លើយរបស់អ្នក (មិនត្រឹមត្រូវ)៖' : 'Your Answer (Incorrect):'}
+                              </p>
+                              <p className="text-xs text-slate-900 font-semibold break-words italic bg-white/70 p-2 rounded-lg border border-rose-200 mb-1.5">
+                                "{currentVal}"
+                              </p>
+                              <p className="text-[11px] text-rose-900 font-medium">
+                                <span className="font-bold">Admin បានបញ្ជាក់៖ </span>
+                                <span>{pendingQuizQuestions[q.id]?.reason || 'មិនត្រឹមត្រូវ'}</span>
+                              </p>
+                              <p className="text-[10px] text-rose-700 mt-1 font-semibold">
+                                {language === 'km' ? '⚠️ សំនួរមួយអតិថិជនអាចឆ្លើយបានតែមួយដងប៉ុណ្ណោះ។' : '⚠️ Each question can only be answered once.'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Answered but not in specific status */}
+                        {hasAnswered && !isVerified && !isPending && !isRejected && (
+                          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-950 flex items-start gap-2.5">
+                            <CheckCircle2 className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[11px] text-amber-800 font-bold mb-0.5">
+                                {language === 'km' ? 'ចម្លើយរបស់អ្នក៖' : 'Your Answer:'}
+                              </p>
+                              <p className="text-xs text-slate-900 font-semibold break-words italic">
+                                "{currentVal}"
+                              </p>
+                              <p className="text-[10px] text-amber-700 font-medium mt-1">
+                                {language === 'km' ? 'អ្នកបានឆ្លើយសំនួរនេះរួចហើយ (សំនួរមួយអាចឆ្លើយបានតែ ១ ដងប៉ុណ្ណោះ)' : 'Answer recorded (1 attempt per question).'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Answer Input ONLY when Not Answered */}
+                        {!hasAnswered && (
+                          <div className="space-y-2">
+                            <div className="flex flex-col sm:flex-row gap-2">
+                              <textarea
+                                rows={2}
+                                placeholder={
+                                  language === 'km'
+                                    ? 'សូមបញ្ចូលចម្លើយរបស់អ្នកនៅទីនេះ... (ឆ្លើយបានតែ ១ ដង)'
+                                    : language === 'zh'
+                                    ? '请输入您的回答... (限答一次)'
+                                    : 'Type your answer here... (1 attempt only)'
+                                }
+                                value={quizAnswers[q.id] || ''}
+                                onChange={(e) =>
+                                  setQuizAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
+                                }
+                                className="flex-1 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white focus:ring-2 focus:ring-purple-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 placeholder:text-slate-400 outline-none transition resize-none"
+                              />
+                              <button
+                                type="button"
+                                disabled={isSubmittingThis || !(quizAnswers[q.id] || '').trim()}
+                                onClick={() => handleAnswerQuizQuestion(q)}
+                                className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shrink-0 shadow-2xs active:scale-95 cursor-pointer disabled:opacity-50 sm:self-stretch"
+                              >
+                                {isSubmittingThis ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Send className="w-3.5 h-3.5 text-amber-300" />
+                                )}
+                                <span>{language === 'km' ? 'បញ្ជូន' : language === 'zh' ? '提交' : 'Submit'}</span>
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-purple-700 flex items-center gap-1">
+                              <span>💡</span>
+                              <span>
+                                {language === 'km'
+                                  ? 'ចំណាំ៖ សំនួរនីមួយៗអាចឆ្លើយបានតែ ១ ដងប៉ុណ្ណោះ សូមពិនិត្យចម្លើយឱ្យបានច្បាស់លាស់មុននឹងបញ្ជូន។'
+                                  : 'Note: Each question can only be answered once. Please check your answer carefully before submitting.'}
+                              </span>
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Bulk Submit & Back Actions */}
+                <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                  {answeredCount < totalQuestions ? (
+                    <button
+                      type="button"
+                      disabled={answeringQuizId === 'bulk_submit'}
+                      onClick={handleBulkAnswerQuiz}
+                      className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md transition active:scale-98 cursor-pointer"
+                    >
+                      {answeringQuizId === 'bulk_submit' ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>{language === 'km' ? 'កំពុងបញ្ជូន...' : 'Submitting...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4 text-amber-300" />
+                          <span>
+                            {language === 'km'
+                              ? 'បញ្ជូនចម្លើយដែលបានបំពេញ (+10 ពិន្ទុក្នុង ១ សំនួរ)'
+                              : language === 'zh'
+                              ? '一键提交所有已填答案 (每题 +10 积分)'
+                              : 'Submit Completed Answers (+10 pts each)'}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <div className="flex-1 py-3 px-4 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <span>{language === 'km' ? '🎉 អ្នកបានឆ្លើយចប់គ្រប់សំនួរទាំងអស់រួចរាល់ហើយ (សំនួរមួយអាចឆ្លើយបានតែ ១ ដង)' : '🎉 You have completed all questions (1 attempt per question)!'}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubView('main')}
+                    className="py-3 px-5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs sm:text-sm transition cursor-pointer"
+                  >
+                    {language === 'km' ? 'ត្រឡប់ទៅផ្ទាំងដើម' : 'Back to Main'}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ========================================================================= */}
           {/* SUB-VIEW 2: DEDICATED REFER A FRIEND FORM (ទម្រង់ណែនាំមិត្តភក្ត័មកទិញផលិតផល) */}
@@ -1482,21 +1828,35 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
           {activeSubView === 'main' && (
             <>
               {/* User Points Card */}
-              <div className="p-4 sm:p-5 rounded-3xl bg-gradient-to-tr from-emerald-900 via-teal-900 to-emerald-950 text-white shadow-lg border border-emerald-700/50 relative overflow-hidden flex items-center justify-between">
-                <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-amber-400/10 rounded-full blur-xl pointer-events-none" />
+              <div
+                className="p-4 sm:p-5 rounded-3xl text-white shadow-md relative overflow-hidden flex items-center justify-between"
+                style={{ backgroundColor: '#2E8B57' }}
+              >
+                <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-white/10 rounded-full blur-xl pointer-events-none" />
 
                 <div className="space-y-1 z-10">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-emerald-300">
+                    <span className="text-xs font-bold" style={{ color: '#FF7F50' }}>
                       {language === 'km' ? 'ពិន្ទុខ្ញុំ' : 'My Points'}
                     </span>
-                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-800/80 text-emerald-200 border border-emerald-600/50 font-bold">
+                    <span
+                      className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-white/15 border"
+                      style={{ color: '#FF7F50', borderColor: 'rgba(255,127,80,0.4)' }}
+                    >
                       {displayName}
                     </span>
                   </div>
-                  <h2 className="text-2xl sm:text-3xl font-black text-amber-300 flex items-center gap-2 pt-1 font-opensans">
-                    <Gift className="w-7 h-7 text-amber-400 shrink-0" />
-                    <span>
+                  <h2
+                    className={`text-2xl sm:text-3xl font-black text-white flex items-center gap-2 pt-1 font-opensans transition-all duration-300 ${
+                      justEarnedAnim ? 'scale-105' : ''
+                    }`}
+                    style={{ color: '#FFFFFF' }}
+                  >
+                    <Gift
+                      className={`w-7 h-7 text-white shrink-0 ${justEarnedAnim ? 'animate-bounce' : ''}`}
+                      style={{ color: '#FFFFFF' }}
+                    />
+                    <span style={{ color: '#FFFFFF' }}>
                       {language === 'km'
                         ? `${currentPoints} ពិន្ទុ`
                         : language === 'zh'
@@ -1507,8 +1867,9 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                 </div>
 
                 {justEarnedAnim && (
-                  <div className="z-10 bg-amber-400 text-slate-950 font-black px-3 py-1.5 rounded-2xl shadow-lg animate-bounce text-xs">
-                    +Points!
+                  <div className="z-10 bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-300 text-slate-950 font-black px-3.5 py-1.5 rounded-2xl shadow-xl animate-bounce text-xs flex items-center gap-1.5 border border-amber-200 ring-4 ring-amber-400/30">
+                    <Sparkles className="w-4 h-4 text-amber-950 fill-amber-950 animate-spin" />
+                    <span>+{earnedBonusAmount} ពិន្ទុ!</span>
                   </div>
                 )}
               </div>
@@ -1545,12 +1906,47 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                 <div className="space-y-3 pt-1">
                   {/* Mission Tasks List */}
                   {(missionTasksList || MISSION_TASKS)
-                    .filter((task) => task.id !== 'task-new-user' && !(task.id === 'task-new-user' && (dismissedTaskIds || []).includes(task.id)))
+                    .filter((task) => {
+                      if (task.id === 'task-new-user' || (dismissedTaskIds || []).includes(task.id)) {
+                        return false;
+                      }
+
+                      // Check if new customer task is already claimed
+                      const isNewCustomerTask = task.id === 'task-new-customer' || task.titleKm?.includes('អតិថិជនថ្មី');
+                      const uid = userProfile?.uid || (userProfile as any)?.id || 'guest';
+                      const isNewCustomerClaimed = isNewCustomerTask && Boolean(
+                        userProfile?.claimedNewCustomerBonus === true ||
+                        (uid !== 'guest' && localStorage.getItem(`lumimei_claimed_new_customer_bonus_${uid}`) === 'true') ||
+                        localStorage.getItem('lumimei_claimed_new_customer_bonus') === 'true' ||
+                        completedTasks.includes(task.id) ||
+                        completedTasks.includes('task-new-customer')
+                      );
+
+                      // Once claimed, this item completely disappears! (一个客户只能领取分数一次，当领取后这个项目就消失)
+                      if (isNewCustomerTask && isNewCustomerClaimed) {
+                        return false;
+                      }
+
+                      return true;
+                    })
                     .map((task) => {
                       const isDaily = task.id === 'task-daily-checkin' || task.id === 'task-fb-cambodia' || task.iconType === 'calendar';
                       const todayStr = getTodayDateStr();
                       const isCheckedInToday = isDaily && (lastCheckinDate === todayStr || (userProfile as any)?.lastCheckInDate === todayStr);
-                      const isCompleted = isDaily ? isCheckedInToday : (completedTasks || []).includes(task.id);
+                      const isNewCustomerTask = task.id === 'task-new-customer' || task.titleKm?.includes('អតិថិជនថ្មី');
+                      const uid = userProfile?.uid || (userProfile as any)?.id || 'guest';
+                      const isNewCustomerClaimed = isNewCustomerTask && Boolean(
+                        userProfile?.claimedNewCustomerBonus === true ||
+                        (uid !== 'guest' && localStorage.getItem(`lumimei_claimed_new_customer_bonus_${uid}`) === 'true') ||
+                        localStorage.getItem('lumimei_claimed_new_customer_bonus') === 'true' ||
+                        completedTasks.includes(task.id) ||
+                        completedTasks.includes('task-new-customer')
+                      );
+                      const isCompleted = isDaily
+                        ? isCheckedInToday
+                        : isNewCustomerTask
+                        ? isNewCustomerClaimed
+                        : (completedTasks || []).includes(task.id);
                       const isPendingReview = !isDaily && (pendingReviewTasks || []).includes(task.id);
                       const isSubmitting = submittingTaskId === task.id;
                       const photoPreview = uploadedPhotos[task.id];
@@ -1567,6 +1963,8 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                               ? 'border-emerald-200 bg-emerald-50/30'
                               : isPendingReview
                               ? 'border-amber-200 bg-amber-50/20'
+                              : isNewCustomerTask
+                              ? 'border-emerald-200 hover:border-emerald-400 bg-gradient-to-r from-emerald-50/40 via-white to-white'
                               : isQuizTask
                               ? 'border-purple-200 hover:border-purple-400 bg-gradient-to-r from-purple-50/40 via-white to-white'
                               : isReferralTask
@@ -1583,6 +1981,8 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                                     ? 'bg-emerald-100 text-emerald-700'
                                     : isPendingReview
                                     ? 'bg-amber-100 text-amber-700'
+                                    : isNewCustomerTask
+                                    ? 'bg-emerald-100 text-emerald-700'
                                     : isQuizTask
                                     ? 'bg-purple-100 text-purple-700'
                                     : isReferralTask
@@ -1590,7 +1990,11 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                                     : 'bg-slate-100 text-slate-700'
                                 }`}
                               >
-                                {renderIcon(task.iconType)}
+                                {isNewCustomerTask ? (
+                                  <UserPlus className="w-5 h-5 text-emerald-700" />
+                                ) : (
+                                  renderIcon(task.iconType)
+                                )}
                               </div>
 
                               <div className="min-w-0">
@@ -1598,26 +2002,31 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                                   {title}
                                 </h5>
                                 {task.rewardTextKm ? (
-                                  <div className="inline-flex items-center gap-1 mt-1 text-xs font-bold text-amber-900 bg-amber-50 border border-amber-300/80 px-2 py-0.5 rounded-lg shadow-2xs">
-                                    {isQuizTask ? (
-                                      <Trophy className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                                    ) : (
-                                      <Gift className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                                    )}
-                                    <span>
+                                  <div
+                                    className="inline-flex items-center mt-0.5 font-bold"
+                                    style={{ color: '#2E8B57', fontSize: '10px' }}
+                                  >
+                                    <span style={{ color: '#2E8B57' }}>
                                       {language === 'km'
                                         ? `ទទួលបាន ${task.rewardTextKm}`
                                         : language === 'zh'
-                                        ? `赠送 ${task.rewardTextZh || task.rewardTextKm}`
+                                        ? `获得 ${task.rewardTextZh || task.rewardTextKm}`
                                         : `Get ${task.rewardTextEn || task.rewardTextKm}`}
                                     </span>
                                   </div>
                                 ) : (
-                                  <p className="text-xs font-bold text-emerald-700 mt-0.5">
-                                    {language === 'km'
-                                      ? `ទទួលបាន ${task.points} ពិន្ទុ`
-                                      : `Earn ${task.points} points`}
-                                  </p>
+                                  <div
+                                    className="inline-flex items-center mt-0.5 font-bold"
+                                    style={{ color: '#2E8B57', fontSize: '10px' }}
+                                  >
+                                    <span style={{ color: '#2E8B57' }}>
+                                      {language === 'km'
+                                        ? `ទទួលបាន ${task.points} ពិន្ទុ`
+                                        : language === 'zh'
+                                        ? `获得 ${task.points} 积分`
+                                        : `Earn ${task.points} points`}
+                                    </span>
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -1665,18 +2074,24 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
 
                               {/* Submit / Status Badges & Buttons */}
                               {isCompleted && !isQuizTask && !isReferralTask ? (
-                                <div className="inline-flex items-center gap-1 text-xs text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1.5 rounded-xl font-bold shadow-2xs font-battambang">
-                                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                                  <span>
+                                <div
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold shadow-2xs font-battambang text-white"
+                                  style={{ fontSize: '11px', color: '#FFFFFF', backgroundColor: '#2E8B57' }}
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-white shrink-0" />
+                                  <span style={{ fontSize: '11px', color: '#FFFFFF' }}>
                                     {isDaily
                                       ? language === 'km' ? 'បានចុះវត្តមានថ្ងៃនេះ' : language === 'zh' ? '今日已签到' : 'Checked In'
                                       : language === 'km' ? 'បានទទួលយក' : 'Claimed'}
                                   </span>
                                 </div>
                               ) : isCompleted && isReferralTask ? (
-                                <div className="inline-flex items-center gap-1 text-xs text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1.5 rounded-xl font-bold shadow-2xs font-battambang">
-                                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                                  <span>{language === 'km' ? 'បានដាក់ចូលកន្ត្រក' : 'Added to Cart'}</span>
+                                <div
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold shadow-2xs font-battambang text-white"
+                                  style={{ fontSize: '11px', color: '#FFFFFF', backgroundColor: '#2E8B57' }}
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-white shrink-0" />
+                                  <span style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'បានដាក់ចូលកន្ត្រក' : 'Added to Cart'}</span>
                                 </div>
                               ) : isPendingReview ? (
                                 <div className="inline-flex items-center gap-1.5 text-xs text-amber-900 bg-amber-100 border border-amber-300 px-3 py-1.5 rounded-xl font-bold shadow-2xs font-battambang">
@@ -1685,56 +2100,75 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                                     {language === 'km' ? 'កំពុងត្រួតពិនិត្យ' : language === 'zh' ? '正在审核' : 'Under Review'}
                                   </span>
                                 </div>
+                              ) : isNewCustomerTask ? (
+                                <button
+                                  id={`claim-btn-${task.id}`}
+                                  onClick={() => handleClaimTask(task)}
+                                  disabled={isSubmitting}
+                                  style={{ height: '28px', fontSize: '11px', color: '#FFFFFF', backgroundColor: '#2E8B57' }}
+                                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1 rounded-xl font-extrabold text-white hover:opacity-90 active:scale-95 shadow-xs transition-all cursor-pointer font-battambang"
+                                >
+                                  {isSubmitting ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                                      <span style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'កំពុងទទួល...' : 'Claiming...'}</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Gift className="w-3.5 h-3.5 text-white" />
+                                      <span style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'ទទួលយក' : language === 'zh' ? '领取' : 'Claim'}</span>
+                                    </>
+                                  )}
+                                </button>
                               ) : isQuizTask ? (
                                 <button
                                   id={`claim-btn-${task.id}`}
                                   onClick={() => setActiveSubView('quiz')}
-                                  className="inline-flex items-center gap-1.5 text-xs px-3.5 py-1.5 rounded-xl font-extrabold text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 shadow-xs shadow-purple-200 active:scale-95 transition-all cursor-pointer font-battambang"
+                                  style={{ height: '28px', fontSize: '11px', color: '#FFFFFF', backgroundColor: '#2E8B57' }}
+                                  className="inline-flex items-center justify-center gap-1.5 px-3 rounded-xl font-extrabold text-white hover:opacity-90 shadow-xs active:scale-95 transition-all cursor-pointer font-battambang shrink-0"
                                 >
-                                  <Gamepad2 className="w-3.5 h-3.5 text-amber-300" />
-                                  <span>{language === 'km' ? 'ចូលទៅឆ្លើយសំនួរ' : 'Go to Answer Quiz'}</span>
-                                  <ArrowRight className="w-3.5 h-3.5" />
+                                  <Gamepad2 className="shrink-0 text-white" style={{ width: '13px', height: '13px' }} />
+                                  <span className="truncate" style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'ចូលទៅឆ្លើយសំនួរ' : 'Go to Answer Quiz'}</span>
+                                  <ArrowRight className="shrink-0 text-white" style={{ width: '12px', height: '12px' }} />
                                 </button>
                               ) : isReferralTask ? (
                                 <button
                                   id={`claim-btn-${task.id}`}
                                   onClick={() => setActiveSubView('referral')}
-                                  className="inline-flex items-center gap-1.5 text-xs px-3.5 py-1.5 rounded-xl font-extrabold text-white bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:to-rose-600 shadow-xs shadow-amber-200 active:scale-95 transition-all cursor-pointer font-battambang"
+                                  style={{ height: '28px', fontSize: '11px', color: '#FFFFFF', backgroundColor: '#2E8B57' }}
+                                  className="inline-flex items-center justify-center gap-1.5 px-3 rounded-xl font-extrabold text-white hover:opacity-90 shadow-xs active:scale-95 transition-all cursor-pointer font-battambang shrink-0"
                                 >
-                                  <Gift className="w-3.5 h-3.5 text-amber-200" />
-                                  <span>{language === 'km' ? 'បំពេញទម្រង់ណែនាំ' : 'Fill Referral Form'}</span>
-                                  <ArrowRight className="w-3.5 h-3.5" />
+                                  <Gift className="shrink-0 text-white" style={{ width: '13px', height: '13px' }} />
+                                  <span className="truncate" style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'បំពេញទម្រង់ណែនាំ' : 'Fill Referral Form'}</span>
+                                  <ArrowRight className="shrink-0 text-white" style={{ width: '12px', height: '12px' }} />
                                 </button>
                               ) : (
                                 <button
                                   id={`claim-btn-${task.id}`}
                                   onClick={() => handleClaimTask(task)}
                                   disabled={isSubmitting}
-                                  className={`inline-flex items-center gap-1.5 text-xs px-3.5 py-1.5 rounded-xl font-extrabold text-white active:scale-95 shadow-xs transition-all cursor-pointer font-battambang ${
-                                    task.requiresPhoto
-                                      ? 'bg-blue-600 hover:bg-blue-700'
-                                      : 'bg-emerald-600 hover:bg-emerald-700'
-                                  }`}
+                                  style={{ height: '28px', fontSize: '11px', color: '#FFFFFF', backgroundColor: '#2E8B57' }}
+                                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl font-extrabold text-white hover:opacity-90 active:scale-95 shadow-xs transition-all cursor-pointer font-battambang"
                                 >
                                   {isSubmitting ? (
                                     <>
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>{language === 'km' ? 'កំពុងបញ្ជូន...' : 'Submitting...'}</span>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                                      <span style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'កំពុងបញ្ជូន...' : 'Submitting...'}</span>
                                     </>
                                   ) : isDaily ? (
                                     <>
-                                      <CalendarCheck className="w-3.5 h-3.5 text-amber-300" />
-                                      <span>{language === 'km' ? 'ចុះវត្តមាន (+2)' : 'Check In (+2)'}</span>
+                                      <CalendarCheck className="w-3.5 h-3.5 text-white" />
+                                      <span style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'ចុះវត្តមាន (+2)' : 'Check In (+2)'}</span>
                                     </>
                                   ) : task.requiresPhoto ? (
                                     <>
-                                      <Send className="w-3.5 h-3.5" />
-                                      <span>Submit</span>
+                                      <Send className="w-3.5 h-3.5 text-white" />
+                                      <span style={{ fontSize: '11px', color: '#FFFFFF' }}>Submit</span>
                                     </>
                                   ) : (
                                     <>
-                                      <Gift className="w-3.5 h-3.5 text-amber-300" />
-                                      <span>{language === 'km' ? 'ទទួលយក' : 'Claim'}</span>
+                                      <Gift className="w-3.5 h-3.5 text-white" />
+                                      <span style={{ fontSize: '11px', color: '#FFFFFF' }}>{language === 'km' ? 'ទទួលយក' : 'Claim'}</span>
                                     </>
                                   )}
                                 </button>
@@ -1747,75 +2181,248 @@ export const MyPointsModal: React.FC<MyPointsModalProps> = ({
                 </div>
               )}
 
-              {/* TAB 2: ប្តូរយករង្វាន់ (Redeem Rewards List) */}
+              {/* TAB 2: ប្តូរយករង្វាន់ (Redeem Rewards List - Synchronized with Live Product Catalog) */}
               {activeTab === 'redeem' && (
-                <div className="space-y-3 pt-1">
-                  <div className="grid grid-cols-1 gap-3">
-                    {REDEEMABLE_ITEMS.map((item) => {
-                      const canAfford = currentPoints >= item.pointsRequired;
+                <div className="space-y-3.5 pt-1">
+                  {/* Live sync banner */}
+                  <div className="p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border border-emerald-200/80 flex items-center gap-2.5">
+                    <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <p className="text-xs text-emerald-900 font-medium">
+                      {language === 'km'
+                        ? 'រាល់ទំនិញប្តូរយករង្វាន់ ត្រូវបានភ្ជាប់ផ្ទាល់ជាមួយទិន្នន័យផលិតផលពិតប្រាកដ (រូបភាព តម្លៃ ស្តុក និងព័ត៌មានលម្អិត)។ ប្តូរបានដោយឥតគិតថ្លៃ ១០០%!'
+                        : language === 'zh'
+                        ? '所有积分兑换商品已全面直连最新商品目录（自动同步最新图片、价格、功效及库存状态）。100% 免费兑换！'
+                        : 'All redeemable rewards are connected directly to the live product catalog with real-time stock, pricing, and details.'}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3.5">
+                    {redeemableRewards.map(({ product, pointsRequired }) => {
+                      const canAfford = currentPoints >= pointsRequired;
+                      const isOutOfStock = (product.stock ?? 0) <= 0;
                       const name =
                         language === 'km'
-                          ? item.nameKm
+                          ? product.nameKm || product.name
                           : language === 'zh'
-                          ? item.nameZh
-                          : item.nameEn;
+                          ? product.nameZh || product.name
+                          : product.name;
+                      const image =
+                        (language === 'km' && product.imageKm) ||
+                        (language === 'zh' && product.imageZh) ||
+                        (language === 'en' && product.imageEn) ||
+                        product.image;
+                      const description =
+                        language === 'km'
+                          ? product.descriptionKm || product.description
+                          : language === 'zh'
+                          ? product.descriptionZh || product.description
+                          : product.description;
+                      const hasPromo = Boolean(product.originalPriceUsd && product.originalPriceUsd > product.priceUsd);
+                      const benefits =
+                        product.benefitsKm && product.benefitsKm.length > 0
+                          ? product.benefitsKm.slice(0, 3)
+                          : [];
 
                       return (
                         <div
-                          key={item.id}
-                          className={`p-3.5 rounded-2xl border transition-all flex gap-3.5 bg-white shadow-2xs ${
-                            canAfford
-                              ? 'border-emerald-200 hover:border-emerald-500'
-                              : 'border-slate-200 opacity-85'
+                          key={product.id}
+                          className={`p-3.5 sm:p-4 rounded-2xl sm:rounded-3xl border transition-all flex flex-col sm:flex-row gap-3.5 bg-white shadow-2xs ${
+                            isOutOfStock
+                              ? 'border-slate-200 bg-slate-50/60 opacity-80'
+                              : canAfford
+                              ? 'border-emerald-300 hover:border-emerald-500 shadow-xs'
+                              : 'border-slate-200'
                           }`}
                         >
-                          <img
-                            src={item.image}
-                            alt={name}
-                            className="w-18 h-18 sm:w-20 sm:h-20 object-cover rounded-xl border border-slate-100 shadow-2xs shrink-0"
-                          />
-
-                          <div className="flex-1 min-w-0 flex flex-col justify-between">
-                            <div>
-                              <div className="flex items-center justify-between gap-1 mb-1">
-                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-200">
-                                  {item.pointsRequired} {language === 'km' ? 'ពិន្ទុ' : 'Points'}
+                          {/* Image & Mobile Header */}
+                          <div className="relative shrink-0 flex sm:block items-center gap-3">
+                            <img
+                              src={image}
+                              alt={name}
+                              className="w-20 h-20 sm:w-24 sm:h-24 object-cover rounded-2xl border border-slate-100 shadow-2xs shrink-0"
+                            />
+                            {/* Mobile Info */}
+                            <div className="sm:hidden flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                                  ⭐ {pointsRequired} {language === 'km' ? 'ពិន្ទុ' : 'Points'}
                                 </span>
+                                {isOutOfStock ? (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                                    {language === 'km' ? 'អស់ពីស្តុក' : language === 'zh' ? '缺货' : 'Out of Stock'}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                    {language === 'km'
+                                      ? `មានស្តុក (${product.stock})`
+                                      : language === 'zh'
+                                      ? `有货 (${product.stock})`
+                                      : `In Stock (${product.stock})`}
+                                  </span>
+                                )}
                               </div>
-                              <h5 className="text-xs sm:text-sm font-bold text-slate-900 truncate">
+                              <h5 className="text-xs font-bold text-slate-900 line-clamp-1">{name}</h5>
+                              <div className="flex items-center gap-1.5 text-xs mt-1">
+                                <span className="font-extrabold text-[#2E8B57]">${product.priceUsd.toFixed(2)}</span>
+                                {hasPromo && (
+                                  <span className="text-slate-400 line-through text-[11px]">
+                                    ${product.originalPriceUsd?.toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Desktop & Expanded Details */}
+                          <div className="flex-1 min-w-0 flex flex-col justify-between space-y-2">
+                            <div>
+                              {/* Desktop Header info */}
+                              <div className="hidden sm:flex items-center justify-between gap-2 mb-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                                    ⭐ {pointsRequired} {language === 'km' ? 'ពិន្ទុ' : 'Points'}
+                                  </span>
+                                  {isOutOfStock ? (
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                                      {language === 'km' ? 'អស់ពីស្តុក' : language === 'zh' ? '缺货' : 'Out of Stock'}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                      {language === 'km'
+                                        ? `មានក្នុងស្តុក (${product.stock})`
+                                        : language === 'zh'
+                                        ? `库存充足 (${product.stock})`
+                                        : `In Stock (${product.stock})`}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-1.5 text-xs">
+                                  <span className="text-slate-500 font-medium">
+                                    {language === 'km' ? 'តម្លៃដើម:' : language === 'zh' ? '原价:' : 'Value:'}
+                                  </span>
+                                  <span className="font-black text-[#2E8B57]">${product.priceUsd.toFixed(2)}</span>
+                                  {hasPromo && (
+                                    <span className="text-slate-400 line-through text-[11px]">
+                                      ${product.originalPriceUsd?.toFixed(2)}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Product Name (Desktop) */}
+                              <h5 className="hidden sm:block text-sm font-extrabold text-slate-900 truncate">
                                 {name}
                               </h5>
-                              <p className="text-[10px] text-slate-500 line-clamp-2 mt-0.5">
-                                {item.descriptionKm}
+
+                              {/* Description */}
+                              <p className="text-[11px] sm:text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                                {description}
                               </p>
+
+                              {/* Benefits chips */}
+                              {benefits.length > 0 && (
+                                <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                                  <span className="text-[10px] font-bold text-slate-500">
+                                    {language === 'km' ? '✨ 功效 / អត្ថប្រយោជន៍:' : '✨ Benefits:'}
+                                  </span>
+                                  {benefits.map((b, i) => (
+                                    <span
+                                      key={i}
+                                      className="text-[10px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200/80 px-2 py-0.5 rounded-md"
+                                    >
+                                      {b}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
 
-                            <button
-                              onClick={() => handleRedeemItem(item)}
-                              disabled={!canAfford}
-                              className={`mt-2 w-full py-1.5 px-3 rounded-xl text-xs font-extrabold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                                canAfford
-                                  ? 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-2xs'
-                                  : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
-                              }`}
-                            >
-                              {canAfford ? (
-                                <>
-                                  <ShoppingBag className="w-3.5 h-3.5 text-amber-300" />
+                            {/* Actions bar: View Details, Copy Link, Redeem */}
+                            <div className="pt-2 border-t border-slate-100 flex flex-wrap sm:flex-nowrap items-center gap-2">
+                              {/* View Details button */}
+                              {onSelectProduct && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onSelectProduct(product);
+                                    onClose();
+                                  }}
+                                  className="py-1.5 px-3 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-2xs"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span className="text-[11px]">
+                                    {language === 'km' ? 'ព័ត៌មានលម្អិត' : language === 'zh' ? '商品详情' : 'Details'}
+                                  </span>
+                                </button>
+                              )}
+
+                              {/* Copy Product Link button */}
+                              <button
+                                type="button"
+                                onClick={() => handleCopyProductLink(product.id)}
+                                className="py-1.5 px-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-2xs"
+                                title="Copy Product Link"
+                              >
+                                {copiedProductId === product.id ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span className="text-[11px] text-emerald-700">
+                                      {language === 'km' ? 'បានចម្លង!' : language === 'zh' ? '已复制' : 'Copied!'}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Share2 className="w-3.5 h-3.5 text-slate-500" />
+                                    <span className="text-[11px]">
+                                      {language === 'km' ? 'តំណ' : language === 'zh' ? '复制链接' : 'Link'}
+                                    </span>
+                                  </>
+                                )}
+                              </button>
+
+                              {/* Redeem Action button */}
+                              <button
+                                onClick={() => handleRedeemItem(product, pointsRequired)}
+                                disabled={!canAfford || isOutOfStock}
+                                className={`flex-1 py-2 px-3 rounded-xl text-xs font-extrabold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs ${
+                                  isOutOfStock
+                                    ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                    : canAfford
+                                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white'
+                                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                }`}
+                              >
+                                {isOutOfStock ? (
                                   <span>
                                     {language === 'km'
-                                      ? 'ប្តូរយករង្វាន់ (FREE)'
-                                      : 'Redeem Item (FREE)'}
+                                      ? 'ផលិតផលអស់ពីស្តុក'
+                                      : language === 'zh'
+                                      ? '暂时缺货'
+                                      : 'Out of Stock'}
                                   </span>
-                                </>
-                              ) : (
-                                <span>
-                                  {language === 'km'
-                                    ? `ត្រូវការ ${item.pointsRequired} ពិន្ទុ`
-                                    : `Requires ${item.pointsRequired} pts`}
-                                </span>
-                              )}
-                            </button>
+                                ) : canAfford ? (
+                                  <>
+                                    <ShoppingBag className="w-3.5 h-3.5 text-amber-300" />
+                                    <span>
+                                      {language === 'km'
+                                        ? 'ប្តូរយករង្វាន់ (FREE $0.00)'
+                                        : language === 'zh'
+                                        ? '免费兑换此商品 (FREE $0.00)'
+                                        : 'Redeem Item (FREE $0.00)'}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span>
+                                    {language === 'km'
+                                      ? `ត្រូវការ ${pointsRequired} ពិន្ទុ (ខ្វះ ${pointsRequired - currentPoints} ពិន្ទុ)`
+                                      : language === 'zh'
+                                      ? `需要 ${pointsRequired} 积分 (还差 ${pointsRequired - currentPoints} 分)`
+                                      : `Requires ${pointsRequired} pts (need ${pointsRequired - currentPoints} more)`}
+                                  </span>
+                                )}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );

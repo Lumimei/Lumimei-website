@@ -24,7 +24,6 @@ import {
   Mail,
   BookOpen,
   Camera,
-  Scan,
   Award,
   Star,
   Target,
@@ -38,9 +37,10 @@ import {
   User,
   LogOut,
   LayoutDashboard,
-  Settings,
   Trash2,
-  Plus
+  Plus,
+  ArrowRight,
+  Bot,
 } from 'lucide-react';
 import { CATEGORIES } from '../data/products';
 import { Language } from '../types';
@@ -55,8 +55,7 @@ interface HeaderProps {
   wishlistCount: number;
   onOpenCart: () => void;
   onOpenWishlist: () => void;
-  onOpenAiAdvisor: () => void;
-  onOpenSkinScan?: () => void;
+  onOpenAiAdvisor?: () => void;
   onOpenPoints?: () => void;
   language: Language;
   setLanguage: (lang: Language) => void;
@@ -80,7 +79,6 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenCart,
   onOpenWishlist,
   onOpenAiAdvisor,
-  onOpenSkinScan,
   onOpenPoints,
   language,
   setLanguage,
@@ -114,7 +112,14 @@ export const Header: React.FC<HeaderProps> = ({
     return () => window.removeEventListener('pointsUpdated', handlePointsUpdated);
   }, []);
 
-  const currentPoints = userProfile?.points !== undefined ? userProfile.points : guestPoints;
+  const currentPoints =
+    userProfile?.points !== undefined
+      ? userProfile.points > 0
+        ? userProfile.points
+        : (!userProfile.totalSpent || userProfile.totalSpent === 0)
+        ? 15
+        : (userProfile.points || 0)
+      : guestPoints;
   const [showShareModal, setShowShareModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [bellActive, setBellActive] = useState(true);
@@ -142,6 +147,7 @@ export const Header: React.FC<HeaderProps> = ({
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
 
   // Top Menu Bar Modals State
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [showAboutDropdown, setShowAboutDropdown] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -149,8 +155,44 @@ export const Header: React.FC<HeaderProps> = ({
   const [activeSubmenuPage, setActiveSubmenuPage] = useState<string | null>(null);
   const [showPromotionModal, setShowPromotionModal] = useState(false);
   const [showRewardsModal, setShowRewardsModal] = useState(false);
+  const [showRewardAuthModal, setShowRewardAuthModal] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
   const [showAccountDropdown, setShowAccountDropdown] = useState(false);
+
+  // Drawer Navigation Handlers
+  const handleDrawerNavigateProducts = () => {
+    setIsDrawerOpen(false);
+    if (onNavigateToProducts) {
+      onNavigateToProducts();
+    } else {
+      window.history.pushState({}, '', '/products');
+      setSelectedCategory('all');
+      setSearchQuery('');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleDrawerOpenAdvisor = () => {
+    setIsDrawerOpen(false);
+    if (onOpenAiAdvisor) {
+      onOpenAiAdvisor();
+    }
+  };
+
+  const handleDrawerOpenContact = () => {
+    setIsDrawerOpen(false);
+    setShowContactModal(true);
+  };
+
+  const handleRewardClick = () => {
+    if (currentUser || userProfile) {
+      if (onOpenPoints) {
+        onOpenPoints();
+      }
+    } else {
+      setShowRewardAuthModal(true);
+    }
+  };
 
   const headerNavRef = useRef<HTMLElement>(null);
   const mobileAccountDropdownRef = useRef<HTMLDivElement>(null);
@@ -207,9 +249,19 @@ export const Header: React.FC<HeaderProps> = ({
     handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
     window.addEventListener('popstate', handleHashChange);
+
+    const handleOpenReviews = () => {
+      setShowReviewsModal(true);
+    };
+    window.addEventListener('lumimei_open_reviews', handleOpenReviews);
+    if (window.location.hash === '#reviews' || window.location.hash === '#review') {
+      setShowReviewsModal(true);
+    }
+
     return () => {
       window.removeEventListener('hashchange', handleHashChange);
       window.removeEventListener('popstate', handleHashChange);
+      window.removeEventListener('lumimei_open_reviews', handleOpenReviews);
     };
   }, []);
 
@@ -291,49 +343,6 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  const topMenuItems = [
-    {
-      id: 'home',
-      labelKm: 'ទំព័រដើម',
-      labelZh: '首页',
-      labelEn: 'Home',
-      icon: Home,
-      onClick: handleHomeClick,
-    },
-    {
-      id: 'product',
-      labelKm: 'ផលិតផល',
-      labelZh: '商品',
-      labelEn: 'Products',
-      icon: Package,
-      onClick: () => {
-        setIsMobileMenuOpen(false);
-        setShowAboutDropdown(false);
-        handleCloseSubmenuPage();
-        if (onNavigateToProducts) {
-          onNavigateToProducts();
-        } else {
-          window.history.pushState({}, '', '/products');
-          setSelectedCategory('all');
-          setSearchQuery('');
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-      },
-    },
-    {
-      id: 'contact',
-      labelKm: 'ទំនាក់ទំនង',
-      labelZh: '联系我们',
-      labelEn: 'Contact Us',
-      icon: PhoneCall,
-      onClick: () => {
-        setIsMobileMenuOpen(false);
-        setShowAboutDropdown(false);
-        setShowContactModal(true);
-      },
-    },
-  ];
-
   const handleShare = async () => {
     if (navigator.share) {
       try {
@@ -356,8 +365,8 @@ export const Header: React.FC<HeaderProps> = ({
     setTimeout(() => setCopiedLink(false), 2500);
   };
 
-  const renderAccountDropdown = (ref: React.RefObject<HTMLDivElement | null>, visibilityClass: string = '') => {
-    const avatarUrl = userProfile?.photoURL || (userProfile as any)?.profilePhotoURL || currentUser?.photoURL;
+  const renderAccountDropdown = (ref: React.RefObject<HTMLDivElement | null>, visibilityClass: string = 'hidden md:block') => {
+    const avatarUrl = userProfile?.photoURL || (userProfile as any)?.profilePhotoURL || currentUser?.photoURL || localStorage.getItem('lumimei_user_photo_url') || '';
     const userDisplayName = userProfile?.fullName || userProfile?.displayName || currentUser?.displayName || '';
     const formattedName = userDisplayName || 'អ្នកប្រើប្រាស់';
 
@@ -380,11 +389,12 @@ export const Header: React.FC<HeaderProps> = ({
           /* LOGGED IN: Render Profile Avatar + User Name Badge */
           <div className="relative inline-block">
             <button
+              id="header-account-btn"
               onClick={() => setShowAccountDropdown((prev) => !prev)}
-              className="flex items-center gap-1.5 p-1 pr-2 bg-emerald-50 hover:bg-emerald-100/90 text-emerald-950 rounded-full border border-emerald-300 shadow-2xs hover:border-emerald-400 hover:shadow-xs transition cursor-pointer group"
+              className="hidden md:flex items-center gap-1.5 p-1 sm:pr-2.5 bg-emerald-50 hover:bg-emerald-100/90 text-emerald-950 rounded-full border border-emerald-300 shadow-2xs hover:border-emerald-400 hover:shadow-xs transition cursor-pointer group shrink-0"
               title={formattedName}
             >
-              <div className="w-8 h-8 rounded-full bg-emerald-700 text-white flex items-center justify-center font-bold text-sm border border-emerald-300 overflow-hidden shrink-0 ring-1 ring-emerald-500/30 shadow-2xs">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-emerald-700 text-white flex items-center justify-center font-bold text-xs sm:text-sm border border-emerald-300 overflow-hidden shrink-0 ring-1 ring-emerald-500/30 shadow-2xs">
                 {avatarUrl ? (
                   <img
                     src={avatarUrl}
@@ -399,26 +409,30 @@ export const Header: React.FC<HeaderProps> = ({
                     }}
                   />
                 ) : (
-                  <span className="font-extrabold text-white text-sm font-opensans">{firstLetter}</span>
+                  <span className="font-extrabold text-white text-xs sm:text-sm font-opensans">{firstLetter}</span>
                 )}
               </div>
+              <span className="text-xs font-bold font-battambang text-emerald-900 hidden sm:inline max-w-[90px] truncate">
+                {formattedName || 'គណនីខ្ញុំ'}
+              </span>
               <ChevronDown className={`w-3.5 h-3.5 text-emerald-700 shrink-0 transition-transform duration-200 ${showAccountDropdown ? 'rotate-180' : ''}`} />
             </button>
           </div>
         ) : (
           /* NOT LOGGED IN: Render "គណនីខ្ញុំ" Button */
           <button
+            id="header-account-btn"
             onClick={() => setShowAccountDropdown((prev) => !prev)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 rounded-full border border-emerald-300 shadow-2xs transition cursor-pointer"
+            className="hidden md:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 rounded-full border border-emerald-300 shadow-2xs transition cursor-pointer shrink-0"
             title="គណនីខ្ញុំ"
           >
             <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
               <User className="w-3.5 h-3.5 text-white" />
             </div>
-            <span className="text-xs font-bold font-battambang text-emerald-900">
+            <span className="text-xs font-bold font-battambang text-emerald-900 whitespace-nowrap">
               គណនីខ្ញុំ
             </span>
-            <ChevronDown className={`w-3.5 h-3.5 text-emerald-700 transition-transform ${showAccountDropdown ? 'rotate-180' : ''}`} />
+            <ChevronDown className={`w-3.5 h-3.5 text-emerald-700 transition-transform shrink-0 ${showAccountDropdown ? 'rotate-180' : ''}`} />
           </button>
         )}
 
@@ -503,20 +517,6 @@ export const Header: React.FC<HeaderProps> = ({
                   </span>
                 </button>
 
-                {/* 2. ការកំណត់ (/account) */}
-                <button
-                  onClick={() => {
-                    setShowAccountDropdown(false);
-                    if (onNavigateToAccount) {
-                      onNavigateToAccount();
-                    }
-                  }}
-                  className="w-full text-left px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2.5 transition cursor-pointer font-battambang"
-                >
-                  <Settings className="w-4 h-4 text-emerald-600" />
-                  <span>ការកំណត់</span>
-                </button>
-
                 {/* 3. Logout (ចាកចេញ / Firebase signOut) */}
                 <button
                   onClick={async () => {
@@ -578,13 +578,13 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <>
       {/* Sticky Top Header Container */}
-      <header className="sticky top-0 z-50 bg-white shadow-md border-b border-emerald-100 overflow-visible" ref={headerNavRef}>
+      <header className="sticky top-0 z-50 bg-white shadow-xs border-b border-[#2E8B57]/20 overflow-visible" ref={headerNavRef}>
         {/* Top Announcement & Quick Tools Bar */}
-        <div className="bg-gradient-to-r from-emerald-700 via-teal-700 to-emerald-800 text-white text-xs py-1.5 px-3 sm:px-4">
+        <div className="bg-[#2E8B57] text-[#FFFFFF] text-xs py-1.5 px-3 sm:px-4">
           <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
             
             {/* Left: Info Announcement */}
-            <div className="hidden lg:flex items-center gap-2 text-[11px] text-emerald-100 font-medium">
+            <div className="hidden lg:flex items-center gap-2 text-[11px] text-white/90 font-medium">
               <span>
                 {language === 'km' 
                   ? 'Lumimei - ផលិតផលថែរក្សាស្បែកមុខធម្មជាតិ' 
@@ -602,20 +602,20 @@ export const Header: React.FC<HeaderProps> = ({
                 className="flex items-center gap-1 bg-white/15 hover:bg-white/25 active:scale-95 px-2 py-0.5 rounded-full text-[11px] font-medium text-white transition cursor-pointer border border-white/20 shadow-2xs"
                 title={language === 'km' ? 'ចែករំលែក' : language === 'zh' ? '分享' : 'Share'}
               >
-                <Share2 className="w-3.5 h-3.5 text-yellow-300" />
+                <Share2 className="w-3.5 h-3.5 text-white" />
                 <span className="hidden xs:inline">
                   {language === 'km' ? 'ចែករំលែក' : language === 'zh' ? '分享' : 'Share'}
                 </span>
               </button>
 
               {/* Language Switcher */}
-              <div className="flex items-center gap-0.5 bg-black/25 p-0.5 rounded-full text-[10px] sm:text-[11px] font-medium border border-white/20">
-                <Globe className="w-3 h-3 ml-1 text-emerald-200 shrink-0" />
+              <div className="flex items-center gap-0.5 bg-black/20 p-0.5 rounded-full text-[10px] sm:text-[11px] font-medium border border-white/20">
+                <Globe className="w-3 h-3 ml-1 text-white/80 shrink-0" />
                 <button
                   onClick={() => setLanguage('km')}
                   className={`flex items-center gap-1 px-2 py-0.5 rounded-full transition cursor-pointer ${
                     language === 'km' 
-                      ? 'bg-white text-emerald-900 font-bold shadow-xs' 
+                      ? 'bg-white text-[#2E8B57] font-bold shadow-xs' 
                       : 'text-white/90 hover:text-white'
                   }`}
                   title="ភាសាខ្មែរ"
@@ -627,7 +627,7 @@ export const Header: React.FC<HeaderProps> = ({
                   onClick={() => setLanguage('en')}
                   className={`flex items-center gap-1 px-2 py-0.5 rounded-full transition cursor-pointer ${
                     language === 'en' 
-                      ? 'bg-white text-emerald-900 font-bold shadow-xs' 
+                      ? 'bg-white text-[#2E8B57] font-bold shadow-xs' 
                       : 'text-white/90 hover:text-white'
                   }`}
                   title="English"
@@ -639,7 +639,7 @@ export const Header: React.FC<HeaderProps> = ({
                   onClick={() => setLanguage('zh')}
                   className={`flex items-center gap-1 px-2 py-0.5 rounded-full transition cursor-pointer ${
                     language === 'zh' 
-                      ? 'bg-white text-emerald-900 font-bold shadow-xs' 
+                      ? 'bg-white text-[#2E8B57] font-bold shadow-xs' 
                       : 'text-white/90 hover:text-white'
                   }`}
                   title="中文"
@@ -653,343 +653,350 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Main Navigation Bar */}
-        <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4 relative z-40 overflow-visible">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-3 sm:gap-4 overflow-visible">
-            {/* Row 1: Brand Logo & Profile Avatar ("គណនីខ្ញុំ") on the same row */}
-            <div className="flex items-center justify-between sm:justify-start gap-3 sm:gap-4 w-full md:w-auto">
-              <div className="flex items-center gap-2 cursor-pointer" onClick={handleHomeClick}>
+        <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4 relative z-40 overflow-visible bg-white">
+          <div className="flex items-center justify-between gap-3 sm:gap-4 overflow-visible">
+            {/* Left: Hamburger Button (☰) & Brand Logo */}
+            <div className="flex items-center gap-2.5 sm:gap-3.5 shrink-0">
+              {/* Hamburger Button (☰) - Shown on mobile, hidden on desktop since sidebar is fixed */}
+              <button
+                type="button"
+                id="header-hamburger-btn"
+                onClick={() => setIsDrawerOpen(true)}
+                className="p-2 sm:p-2.5 rounded-xl text-[#2E8B57] hover:bg-[#2E8B57]/10 active:bg-[#2E8B57]/20 transition cursor-pointer border border-[#2E8B57]/20 bg-white shadow-2xs shrink-0 flex lg:hidden items-center justify-center group"
+                aria-label="Open menu"
+                title={language === 'km' ? 'ម៉ឺនុយ' : language === 'zh' ? '主菜单' : 'Menu'}
+              >
+                <Menu className="w-5 h-5 sm:w-6 sm:h-6 text-[#2E8B57] group-hover:scale-105 transition-transform" />
+              </button>
+
+              {/* Brand Logo */}
+              <div className="flex items-center gap-2 sm:gap-2.5 cursor-pointer shrink-0" onClick={handleHomeClick}>
                 <img
-                  src="https://i.postimg.cc/t7GTTRX8/Logo-20260630-155252-0000.png"
+                  id="header-brand-logo-img"
+                  src="/src/assets/images/lumimei_logo.png"
                   alt="Lumimei Logo"
-                  className="w-11 h-11 object-contain rounded-full shadow-md shrink-0 border border-emerald-100 bg-white"
+                  className="w-[35px] h-[35px] object-contain rounded-full shadow-xs shrink-0 border border-[#2E8B57]/20 bg-white"
                   referrerPolicy="no-referrer"
                 />
-                <div>
-                  <h1 className="text-[27px] font-bold tracking-tight text-emerald-700 font-opensans leading-tight" style={{ fontFamily: "'Open Sans', sans-serif" }}>
-                    Lumimei
-                  </h1>
-                  <p className="text-[12px] text-emerald-700 font-semibold tracking-wide font-battambang mt-0.5" style={{ fontFamily: "'Battambang', 'Open Sans', sans-serif" }}>
-                    {language === 'km' ? 'អ្នកឯកទេសថែរក្សាមុខមុនគ្រប់ប្រភេទ' : language === 'zh' ? '美妆与护肤专营店' : 'Cosmetics & Skincare'}
-                  </p>
-                </div>
+                <h1 className="text-[24px] sm:text-[27px] font-bold tracking-tight text-[#2E8B57] font-opensans leading-tight" style={{ fontFamily: "'Open Sans', sans-serif" }}>
+                  Lumimei
+                </h1>
               </div>
-
-              {/* Profile Avatar / Account Dropdown Menu ("គណនីខ្ញុំ") beside Lumimei on Mobile */}
-              {renderAccountDropdown(mobileAccountDropdownRef, 'md:hidden')}
             </div>
 
-            {/* Row 2: Action Buttons in Order: 1. Bell -> 2. Review -> 3. Wishlist -> 4. Cart -> 5. Account Dropdown (Desktop) */}
-            <div className="flex items-center justify-center sm:justify-end gap-2 sm:gap-2.5 flex-wrap sm:flex-nowrap shrink-0 w-full md:w-auto">
-              {/* 1. បើកការជូនដំណឹង (Bell Button) */}
+            {/* Action Buttons: Wishlist & Cart */}
+            <div className="flex items-center justify-end gap-2 sm:gap-2.5 shrink-0">
+              {/* បញ្ជីផលិតផលពេញចិត្ត (Wishlist Button) */}
               <button
-                onClick={toggleBellNotification}
-                className={`relative p-2 rounded-full border transition cursor-pointer shrink-0 ${
-                  bellActive
-                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-300 shadow-xs'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-300'
-                }`}
-                title={
-                  language === 'km'
-                    ? 'បើកការជូនដំណឹង'
-                    : language === 'zh'
-                    ? '小铃铛通知'
-                    : 'Offer & Sale Notifications'
-                }
-              >
-                <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
-                {bellActive && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white animate-pulse" />
-                )}
-              </button>
-
-              {/* 2. ការវាយតម្លៃ (Review / Customer Reviews Button) */}
-              <button
-                onClick={() => setShowReviewsModal(true)}
-                className="relative p-2 text-amber-600 hover:text-amber-700 bg-amber-50/80 hover:bg-amber-100 rounded-full border border-amber-200/80 transition cursor-pointer shrink-0 shadow-2xs"
-                title={
-                  language === 'km'
-                    ? 'ការវាយតម្លៃអតិថិជន (Reviews)'
-                    : language === 'zh'
-                    ? '客户评价 (Reviews)'
-                    : 'Customer Reviews'
-                }
-              >
-                <Star className="w-4 h-4 sm:w-5 sm:h-5 fill-amber-400 text-amber-500" />
-                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 sm:min-w-5 sm:h-5 bg-emerald-600 text-white text-[9px] sm:text-[10px] font-extrabold rounded-full flex items-center justify-center shadow-2xs">
-                  {reviewsList.length > 0 ? `${reviewsList.length}` : '0'}
-                </span>
-              </button>
-
-              {/* 3. បញ្ជីផលិតផលពេញចិត្ត (Wishlist Button) */}
-              <button
+                id="header-wishlist-btn"
                 onClick={onOpenWishlist}
-                className="relative p-2 text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 rounded-full border border-slate-200 transition cursor-pointer shrink-0"
+                className="relative p-2 text-[#2E8B57] hover:bg-[#2E8B57]/10 rounded-full border border-[#2E8B57]/20 transition cursor-pointer shrink-0"
                 title="បញ្ជីផលិតផលពេញចិត្ត"
               >
-                <Heart className="w-4 h-4 sm:w-5 sm:h-5" />
+                <Heart className="w-4 h-4 sm:w-5 sm:h-5 text-[#2E8B57]" />
                 {wishlistCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 sm:w-5 sm:h-5 bg-emerald-600 text-white text-[9px] sm:text-[10px] font-bold rounded-full flex items-center justify-center">
+                  <span className="absolute -top-1 -right-1 w-4 h-4 sm:w-5 sm:h-5 bg-[#FF7F50] text-[#FFFFFF] text-[9px] sm:text-[10px] font-bold rounded-full flex items-center justify-center shadow-2xs">
                     {wishlistCount}
                   </span>
                 )}
               </button>
 
-              {/* 3. កន្ត្រកទំនិញរបស់អ្នក (Cart Button) */}
+              {/* កន្ត្រកទំនិញរបស់អ្នក (Cart Button) */}
               <button
+                id="header-cart-btn"
                 onClick={onOpenCart}
-                className="relative flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 bg-emerald-950 text-white text-xs sm:text-sm font-medium rounded-full hover:bg-emerald-900 transition cursor-pointer shadow-xs shrink-0"
+                className="relative p-2 text-[#2E8B57] hover:bg-[#2E8B57]/10 rounded-full border border-[#2E8B57]/20 transition cursor-pointer shrink-0"
                 title="កន្ត្រកទំនិញរបស់អ្នក"
               >
-                <div className="relative">
-                  <ShoppingBag className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-300" />
-                  {cartCount > 0 && (
-                    <span className="absolute -top-1.5 -right-2 w-4 h-4 bg-emerald-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
-                      {cartCount}
-                    </span>
-                  )}
-                </div>
-                <span className="hidden md:inline text-emerald-200 font-semibold">
-                  ${totalUsd.toFixed(2)}
-                </span>
+                <ShoppingBag className="w-4 h-4 sm:w-5 sm:h-5 text-[#2E8B57]" />
+                {cartCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 sm:w-5 sm:h-5 bg-[#FF7F50] text-[#FFFFFF] text-[9px] sm:text-[10px] font-bold rounded-full flex items-center justify-center shadow-2xs">
+                    {cartCount}
+                  </span>
+                )}
               </button>
 
-              {/* 4. រង្វាន់ Reward (Reward Icon Button) */}
-              <button
-                onClick={onOpenPoints}
-                className="relative flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-800 text-white text-xs sm:text-sm font-bold rounded-full transition cursor-pointer shadow-xs shrink-0 active:scale-95 group"
-                title={
-                  language === 'km'
-                    ? 'រង្វាន់ និងពិន្ទុសន្សំ (Reward)'
-                    : language === 'zh'
-                    ? '积分与奖励 (Reward)'
-                    : 'Reward & Points'
-                }
-              >
-                <div className="relative">
-                  <Gift className="w-4 h-4 sm:w-5 sm:h-5 text-amber-100 group-hover:scale-110 transition-transform" />
-                  <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 bg-amber-950 text-amber-200 text-[9px] font-black rounded-full flex items-center justify-center border border-amber-300/40">
-                    {currentPoints}
-                  </span>
-                </div>
-                <span className="hidden sm:inline text-white font-bold text-xs tracking-wide font-opensans">
-                  Reward
-                </span>
-              </button>
-
-              {/* 4.1 Admin Portal Quick Button (Shown for Admins) */}
-              {isAdmin && onNavigateToAdmin && (
-                <button
-                  onClick={onNavigateToAdmin}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 bg-gradient-to-r from-slate-900 to-emerald-950 hover:from-slate-800 hover:to-emerald-900 text-amber-300 text-xs sm:text-sm font-extrabold rounded-full border border-amber-400/80 shadow-md transition cursor-pointer shrink-0 active:scale-95 group"
-                  title="ចូលផ្ទាំង Admin (Admin Portal)"
-                >
-                  <ShieldCheck className="w-4 h-4 text-amber-400 group-hover:rotate-12 transition-transform" />
-                  <span className="font-bold tracking-wide">
-                    Admin
-                  </span>
-                </button>
-              )}
-
-              {/* 5. គណនីខ្ញុំ (Account Dropdown Menu on Desktop) */}
+              {/* គណនីខ្ញុំ (My Account Button & Dropdown) - 隐藏在手机端，仅在电脑端显示 */}
               {renderAccountDropdown(desktopAccountDropdownRef, 'hidden md:block')}
             </div>
           </div>
         </div>
+      </header>
 
-        {/* Navigation Menu Bar */}
-        <nav className="bg-emerald-900 text-white border-t border-emerald-800 shadow-inner relative z-20 overflow-visible">
-          {/* Desktop / Responsive Top Navigation Bar */}
-          <div className="max-w-7xl mx-auto px-2 sm:px-4 hidden sm:flex flex-wrap items-center justify-start gap-2 sm:gap-3 py-2.5 overflow-visible">
-            {topMenuItems.map((item) => {
-              const Icon = item.icon;
-              const label =
-                language === 'km'
-                  ? item.labelKm
-                  : language === 'zh'
-                  ? item.labelZh
-                  : item.labelEn;
+      {/* Hamburger Left Drawer Backdrop (Mobile only) */}
+      {isDrawerOpen && (
+        <div
+          id="drawer-backdrop"
+          className="fixed inset-0 z-[100] bg-slate-950/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200 lg:hidden"
+          onClick={() => setIsDrawerOpen(false)}
+        />
+      )}
 
-              if (item.id === 'about') {
-                return (
-                  <div key={item.id} className="relative shrink-0">
-                    <button
-                      onClick={item.onClick}
-                      className="relative flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-bold transition whitespace-nowrap cursor-pointer bg-emerald-800/80 hover:bg-emerald-700 text-emerald-100 hover:text-white border border-emerald-600/60 shadow-xs group"
-                    >
-                      <Icon className="w-4 h-4 text-emerald-300 group-hover:scale-110 transition-transform" />
-                      <span>{label}</span>
-                      <ChevronDown className={`w-3.5 h-3.5 text-emerald-300 transition-transform duration-200 ml-0.5 ${showAboutDropdown ? 'rotate-180' : ''}`} />
-                    </button>
-
-                    {/* Dropdown Submenu */}
-                    {showAboutDropdown && (
-                      <div className="absolute top-full left-0 mt-1.5 w-72 bg-slate-900/98 backdrop-blur-xl text-white border border-emerald-500/40 rounded-2xl shadow-2xl p-2 z-[100] animate-in fade-in zoom-in-95 duration-150 origin-top-left">
-                        <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider px-3 py-1.5 border-b border-slate-800/80 mb-1.5 flex items-center justify-between">
-                          <span className="flex items-center gap-1.5">
-                            <Sparkles className="w-3 h-3 text-emerald-400" />
-                            {language === 'km' ? 'អំពី Lumimei' : language === 'zh' ? '关于 Lumimei' : 'About Lumimei'}
-                          </span>
-                          <button
-                            onClick={() => setShowAboutDropdown(false)}
-                            className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full cursor-pointer transition"
-                            title="Close"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        <div className="space-y-1">
-                          {aboutSubmenuItems.map((sub) => {
-                            const SubIcon = sub.icon;
-                            const subLabel =
-                              language === 'km'
-                                ? sub.labelKm
-                                : language === 'zh'
-                                ? sub.labelZh
-                                : sub.labelEn;
-                            return (
-                              <button
-                                key={sub.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleSubmenuClick(sub.id);
-                                }}
-                                className="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-100 hover:text-white bg-slate-800/80 hover:bg-emerald-700/90 border border-slate-700/60 hover:border-emerald-500/80 shadow-xs transition group text-left cursor-pointer active:scale-[0.98]"
-                              >
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <div className="p-1.5 rounded-lg bg-emerald-900/80 text-emerald-300 group-hover:bg-emerald-500 group-hover:text-white transition shrink-0">
-                                    <SubIcon className="w-3.5 h-3.5" />
-                                  </div>
-                                  <span className="line-clamp-1 text-xs">{subLabel}</span>
-                                </div>
-                                <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-200 transition-transform group-hover:translate-x-0.5 shrink-0" />
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-
-              const isActive =
-                (item.id === 'home' && currentPage === 'home') ||
-                (item.id === 'product' && currentPage === 'products');
-
-              return (
-                <button
-                  key={item.id}
-                  onClick={item.onClick}
-                  className={`relative flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition whitespace-nowrap cursor-pointer shrink-0 border ${
-                    isActive
-                      ? 'bg-emerald-600 text-white font-bold border-emerald-400 shadow-md ring-1 ring-emerald-300'
-                      : 'bg-emerald-800/60 hover:bg-emerald-700 text-emerald-100 hover:text-white border-emerald-700/50'
-                  }`}
-                >
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-amber-300' : 'text-emerald-300'}`} />
-                  <span>{label}</span>
-                </button>
-              );
-            })}
+      {/* Hamburger Left Drawer Side Menu / Desktop Persistent Left Sidebar */}
+      <div
+        id="side-drawer-menu"
+        className={`fixed top-0 bottom-0 left-0 w-[290px] sm:w-[320px] lg:w-[260px] xl:w-[280px] bg-white z-[101] lg:z-30 shadow-2xl lg:shadow-none border-r border-slate-200/80 flex flex-col transition-transform duration-300 ease-in-out ${
+          isDrawerOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
+        {/* Drawer Header */}
+        <div id="side-drawer-header" className="p-4 sm:p-5 border-b border-emerald-800 flex items-center justify-between bg-emerald-700 text-white shrink-0">
+          <div
+            className="flex items-center gap-2.5 cursor-pointer"
+            onClick={() => {
+              setIsDrawerOpen(false);
+              handleHomeClick();
+            }}
+          >
+            <img
+              src="/src/assets/images/lumimei_logo.png"
+              alt="Lumimei"
+              className="w-9 h-9 object-contain rounded-full bg-white border border-emerald-200 shadow-xs"
+              referrerPolicy="no-referrer"
+            />
+            <span className="text-xl font-bold tracking-tight text-white font-opensans leading-none">
+              Lumimei
+            </span>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsDrawerOpen(false)}
+            className="p-1.5 rounded-full text-white/90 hover:text-white hover:bg-emerald-800/80 transition cursor-pointer lg:hidden"
+            aria-label="Close menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
 
-          {/* Mobile Navigation Bar & Collapsible Drawer (sm:hidden) */}
-          <div className="sm:hidden px-3 py-2">
-            {/* Quick bar with horizontal menu buttons */}
-            <div className="flex items-center justify-around gap-1">
-              {topMenuItems.map((item) => {
-                const Icon = item.icon;
-                const label =
-                  language === 'km'
-                    ? item.labelKm
-                    : language === 'zh'
-                    ? item.labelZh
-                    : item.labelEn;
-
-                if (item.id === 'about') {
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setShowAboutDropdown((prev) => !prev)}
-                      className="flex flex-col items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold text-emerald-100 bg-emerald-800/90 hover:bg-emerald-700 border border-emerald-600/60"
-                    >
-                      <Icon className="w-4 h-4 text-emerald-300" />
-                      <span className="flex items-center gap-0.5">
-                        {label}
-                        <ChevronDown className={`w-3 h-3 text-emerald-300 transition-transform ${showAboutDropdown ? 'rotate-180' : ''}`} />
-                      </span>
-                    </button>
-                  );
-                }
-
-                const isActive =
-                  (item.id === 'home' && currentPage === 'home') ||
-                  (item.id === 'product' && currentPage === 'products');
-
-                return (
-                  <button
-                    key={item.id}
-                    onClick={item.onClick}
-                    className={`flex flex-col items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition border ${
-                      isActive
-                        ? 'bg-emerald-600 text-white font-bold border-emerald-400 shadow-sm'
-                        : 'text-emerald-100 hover:text-white bg-emerald-800/50 hover:bg-emerald-700 border-transparent'
-                    }`}
-                  >
-                    <Icon className={`w-4 h-4 ${isActive ? 'text-amber-300' : 'text-emerald-300'}`} />
-                    <span>{label}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Mobile Collapsible Drawer when isMobileMenuOpen OR showAboutDropdown */}
-            {(isMobileMenuOpen || showAboutDropdown) && (
-              <div className="mt-2.5 p-3 bg-slate-900/95 border border-emerald-500/40 rounded-2xl shadow-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
-                <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider px-1 pb-1 border-b border-slate-800 flex items-center justify-between">
-                  <span>{language === 'km' ? 'អំពី Lumimei (ទំព័ររង)' : language === 'zh' ? '关于 Lumimei (子菜单)' : 'About Lumimei Pages'}</span>
-                  <button
-                    onClick={() => {
-                      setIsMobileMenuOpen(false);
-                      setShowAboutDropdown(false);
-                    }}
-                    className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+        {/* Drawer Menu Items */}
+        <div className="flex-1 overflow-y-auto py-3 px-3 sm:px-4 space-y-2">
+          {/* 1. អំពី Lumimei (បង្ហាញជូន តែចុចមិនមានប្រតិកម្ម) */}
+          <div
+            id="drawer-item-about"
+            onClick={(e) => {
+              e.preventDefault();
+              // បង្ហាញចេញមកធម្មតា តែពេលចុចមិនមានប្រតិកម្ម (No action on click as requested)
+            }}
+            className="w-full flex items-center justify-between p-3 rounded-2xl text-left select-none bg-slate-50/90 border border-slate-200/80 shadow-2xs cursor-default"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100/80 text-emerald-800 flex items-center justify-center shadow-2xs shrink-0">
+                <Info className="w-5 h-5 text-emerald-700" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 font-battambang">
+                  {language === 'km' ? 'អំពី Lumimei' : language === 'zh' ? '关于 Lumimei' : 'About Lumimei'}
                 </div>
-
-                <div className="grid grid-cols-1 gap-1.5 pt-1">
-                  {aboutSubmenuItems.map((sub) => {
-                    const SubIcon = sub.icon;
-                    const subLabel =
-                      language === 'km'
-                        ? sub.labelKm
-                        : language === 'zh'
-                        ? sub.labelZh
-                        : sub.labelEn;
-                    return (
-                      <button
-                        key={sub.id}
-                        onClick={() => handleSubmenuClick(sub.id)}
-                        className="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-100 hover:text-white bg-slate-800/90 hover:bg-emerald-700 border border-slate-700/80 active:scale-[0.98] transition text-left cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="p-1 rounded-lg bg-emerald-900 text-emerald-300">
-                            <SubIcon className="w-3.5 h-3.5" />
-                          </div>
-                          <span className="truncate">{subLabel}</span>
-                        </div>
-                        <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      </button>
-                    );
-                  })}
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'ព័ត៌មានអំពីប្រេន Lumimei' : language === 'zh' ? '品牌介绍与故事' : 'Brand Information'}
                 </div>
               </div>
-            )}
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
           </div>
-        </nav>
-      </header>
+
+          {/* 2. ផលិតផល (Products) */}
+          <button
+            type="button"
+            id="drawer-item-products"
+            onClick={handleDrawerNavigateProducts}
+            className={`w-full flex items-center justify-between p-3 rounded-2xl transition text-left cursor-pointer group shadow-2xs ${
+              currentPage === 'products'
+                ? 'bg-emerald-50/90 border border-emerald-400/90 text-emerald-900'
+                : 'bg-slate-50 hover:bg-emerald-50/90 active:bg-emerald-100 border border-slate-200/80 hover:border-emerald-300'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                <Package className="w-5 h-5 text-emerald-800" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 group-hover:text-emerald-900 font-battambang">
+                  {language === 'km' ? 'ផលិតផល' : language === 'zh' ? '产品列表' : 'Products'}
+                </div>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'ស្វែងរកមុខទំនិញទាំងអស់' : language === 'zh' ? '商品列表 (Products)' : 'Browse All Products'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+
+          {/* 3. Promotion */}
+          <button
+            type="button"
+            id="drawer-item-promotion"
+            onClick={() => {
+              setIsDrawerOpen(false);
+              if (currentPage !== 'home' && onNavigateToHome) {
+                onNavigateToHome();
+                setTimeout(() => {
+                  const el = document.getElementById('promotion-section') || document.getElementById('products-section');
+                  if (el) el.scrollIntoView({ behavior: 'smooth' });
+                }, 200);
+              } else {
+                const el = document.getElementById('promotion-section') || document.getElementById('products-section');
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }
+            }}
+            className="w-full flex items-center justify-between p-3 rounded-2xl transition text-left cursor-pointer group bg-slate-50 hover:bg-orange-50/90 active:bg-orange-100 border border-slate-200/80 hover:border-orange-300 shadow-2xs"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                <Tag className="w-5 h-5 text-[#FF7F50]" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 group-hover:text-orange-900 font-battambang">
+                  Promotion
+                </div>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'ប្រូម៉ូសិនពិសេស & ការបញ្ចុះតម្លៃ' : language === 'zh' ? '特惠促销 (Promotions)' : 'Special Promotions'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-orange-600 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+
+          {/* 4. វិភាគស្បែកមុខដោយឥតគិតថ្លៃ (Free Skin Analysis) */}
+          <button
+            type="button"
+            id="drawer-item-advisor"
+            onClick={handleDrawerOpenAdvisor}
+            className="w-full flex items-center justify-between p-3 rounded-2xl text-left select-none bg-gradient-to-r from-emerald-50/70 via-teal-50/40 to-white hover:bg-emerald-50 border border-emerald-200 shadow-2xs hover:shadow-xs transition group cursor-pointer"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#2E8B57] to-emerald-400 text-white flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                <Sparkles className="w-5 h-5 text-yellow-300 animate-pulse" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 group-hover:text-[#2E8B57] font-battambang">
+                  {language === 'km' ? 'វិភាគស្បែកមុខដោយឥតគិតថ្លៃ' : language === 'zh' ? '免费测肤' : 'Free Skin Analysis'}
+                </div>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'វិភាគសភាពស្បែកមុខ និងណែនាំរូបមន្ត' : language === 'zh' ? '科学分析肤质并提供个性化建议' : 'Personalized Skincare Evaluation'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-[#2E8B57] group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+
+          {/* ចំណេះដឹងស្បែកមុខ (បង្ហាញជូន តែចុចមិនមានប្រតិកម្ម) */}
+          <div
+            id="drawer-item-skincare-knowledge"
+            onClick={(e) => {
+              e.preventDefault();
+              // បង្ហាញចេញមកធម្មតា តែពេលចុចមិនមានប្រតិកម្ម (No action on click as requested)
+            }}
+            className="w-full flex items-center justify-between p-3 rounded-2xl text-left select-none bg-slate-50/90 border border-slate-200/80 shadow-2xs cursor-default"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-800 flex items-center justify-center shadow-2xs shrink-0">
+                <BookOpen className="w-5 h-5 text-sky-700" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 font-battambang">
+                  {language === 'km' ? 'ចំណេះដឹងស្បែកមុខ' : language === 'zh' ? '护肤小知识' : 'Skincare Tips'}
+                </div>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'គន្លឹះថែរក្សាស្បែកមុខត្រឹមត្រូវ' : language === 'zh' ? '健康护肤常识' : 'Healthy Skin Habits'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+          </div>
+
+          {/* 6. Review */}
+          <button
+            type="button"
+            id="drawer-item-reviews"
+            onClick={() => {
+              setIsDrawerOpen(false);
+              setShowReviewsModal(true);
+            }}
+            className="w-full flex items-center justify-between p-3 rounded-2xl transition text-left cursor-pointer group bg-slate-50 hover:bg-amber-50/90 active:bg-amber-100 border border-slate-200/80 hover:border-amber-300 shadow-2xs"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                <Star className="w-5 h-5 text-amber-500 fill-amber-400/30" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 group-hover:text-amber-900 font-battambang">
+                  Review
+                </div>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'មតិយោបល់ពិតពីអតិថិជន' : language === 'zh' ? '客户评价 (Review)' : 'Customer Reviews'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-amber-700 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+
+          {/* 7. ទំនាក់ទំនងពួកយើង (Contact Us) */}
+          <button
+            type="button"
+            id="drawer-item-contact"
+            onClick={handleDrawerOpenContact}
+            className="w-full flex items-center justify-between p-3 rounded-2xl transition text-left cursor-pointer group bg-slate-50 hover:bg-emerald-50/90 active:bg-emerald-100 border border-slate-200/80 hover:border-emerald-300 shadow-2xs"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                <PhoneCall className="w-5 h-5 text-emerald-700" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-slate-900 group-hover:text-emerald-900 font-battambang">
+                  {language === 'km' ? 'ទំនាក់ទំនងពួកយើង' : language === 'zh' ? '联系我们' : 'Contact Us'}
+                </div>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  {language === 'km' ? 'ផ្នែកបម្រើអតិថិជន & Telegram' : language === 'zh' ? '联系我们 (Contact Us)' : 'Customer Support'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+
+          {/* 8. ចាកចេញ (Logout) */}
+          <button
+            type="button"
+            id="drawer-item-logout"
+            onClick={async () => {
+              setIsDrawerOpen(false);
+              try {
+                await logout();
+              } catch {
+                // ignore
+              }
+              if (onNavigateToHome) {
+                onNavigateToHome();
+              } else {
+                handleHomeClick();
+              }
+            }}
+            className="w-full flex items-center justify-between p-3 rounded-2xl transition text-left cursor-pointer group bg-rose-50/70 hover:bg-rose-100/80 active:bg-rose-200/80 border border-rose-200/80 hover:border-rose-300 shadow-2xs"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                <LogOut className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-rose-700 group-hover:text-rose-800 font-battambang">
+                  {language === 'km' ? 'ចាកចេញ' : language === 'zh' ? '退出登录' : 'Logout'}
+                </div>
+                <div className="text-[11px] text-rose-500 font-medium">
+                  {language === 'km' ? 'ចាកចេញពីគណនី (Logout)' : language === 'zh' ? '退出登录 (Logout)' : 'Logout of Account'}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-rose-400 group-hover:text-rose-600 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+        </div>
+
+        {/* Drawer Footer */}
+        <div className="p-4 border-t border-slate-100 bg-slate-50/80">
+          <div className="text-xs text-slate-600">
+            <p className="font-semibold text-slate-800">Lumimei Cambodia</p>
+          </div>
+        </div>
+      </div>
 
       {/* Bell Notification Settings / Alert Modal */}
       {showBellNoticeModal && (
@@ -2124,6 +2131,10 @@ export const Header: React.FC<HeaderProps> = ({
                   setShowReviewsModal(false);
                   setShowWriteReviewForm(false);
                   setReviewSubmitted(false);
+                  window.dispatchEvent(new CustomEvent('lumimei_reviews_closed'));
+                  if (window.location.hash === '#reviews' || window.location.hash === '#review') {
+                    window.history.pushState({}, '', window.location.pathname);
+                  }
                 }}
                 className="text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100 cursor-pointer transition shrink-0"
               >
@@ -2426,7 +2437,13 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Modal Footer */}
             <div className="pt-3 border-t border-gray-100 flex justify-end shrink-0">
               <button
-                onClick={() => setShowReviewsModal(false)}
+                onClick={() => {
+                  setShowReviewsModal(false);
+                  window.dispatchEvent(new CustomEvent('lumimei_reviews_closed'));
+                  if (window.location.hash === '#reviews' || window.location.hash === '#review') {
+                    window.history.pushState({}, '', window.location.pathname);
+                  }
+                }}
                 className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
               >
                 {language === 'km' ? 'បិទ' : 'Close'}
@@ -2450,6 +2467,111 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <X className="w-5 h-5" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Require Account for Reward */}
+      {showRewardAuthModal && (
+        <div className="fixed inset-0 z-[9999] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+          <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden border border-amber-200/80 p-6 sm:p-7 text-center font-battambang animate-in zoom-in-95 duration-200">
+            {/* Close Button */}
+            <button
+              onClick={() => setShowRewardAuthModal(false)}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition cursor-pointer"
+              title={language === 'km' ? 'បិទ' : 'Close'}
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Glowing Icon */}
+            <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-amber-500 to-amber-400 text-white flex items-center justify-center mx-auto shadow-lg shadow-amber-500/25 mb-4 relative">
+              <Gift className="w-8 h-8 animate-bounce" />
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full flex items-center justify-center text-[10px] text-white font-bold border-2 border-white shadow-xs">
+                <Sparkles className="w-3 h-3" />
+              </span>
+            </div>
+
+            {/* Badge */}
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-900 border border-amber-200/80 rounded-full text-xs font-bold mb-3">
+              <span>🎁 Lumimei Reward & Points</span>
+            </div>
+
+            {/* Title */}
+            <h3 className="text-lg sm:text-xl font-extrabold text-slate-900 leading-snug mb-2 font-battambang">
+              {language === 'km'
+                ? 'តម្រូវឱ្យបង្កើតគណនីជាមុនសិន!'
+                : language === 'zh'
+                ? '请先注册创建账号！'
+                : 'Please Create an Account First!'}
+            </h3>
+
+            {/* Description */}
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed mb-5 max-w-sm mx-auto">
+              {language === 'km'
+                ? 'ដើម្បីចូលរួមសន្សំពិន្ទុ លេងហ្គេមឆ្លើយសំនួរ និងប្តូរយករង្វាន់ផលិតផល Lumimei ដោយឥតគិតថ្លៃ សូមបង្កើតគណនីថ្មីរបស់អ្នកជាមុនសិន។'
+                : language === 'zh'
+                ? '为了参与赚取积分、参与答题互动并免费兑换 Lumimei 护肤好礼，请先创建您的专属账号。'
+                : 'To earn reward points, participate in skincare quizzes, and redeem free Lumimei products, please create an account first.'}
+            </p>
+
+            {/* Perks summary */}
+            <div className="bg-amber-50/80 border border-amber-200/70 rounded-2xl p-3.5 mb-5 text-left space-y-2 text-xs text-amber-950">
+              <div className="flex items-center gap-2 font-semibold">
+                <span className="text-amber-600 text-sm">✨</span>
+                <span>{language === 'km' ? 'ទទួលបាន +15 ពិន្ទុឥតគិតថ្លៃភ្លាមៗពេលចុះឈ្មោះ' : language === 'zh' ? '新用户注册立享 +15 专属欢迎积分' : 'Instant +15 welcome points upon registration'}</span>
+              </div>
+              <div className="flex items-center gap-2 font-semibold">
+                <span className="text-amber-600 text-sm">🎯</span>
+                <span>{language === 'km' ? 'ឆ្លើយសំនួរឈ្នះរង្វាន់ និងពិន្ទុរៀងរាល់ថ្ងៃ' : language === 'zh' ? '每日答题挑战，轻松赢取丰富积分' : 'Daily quizzes to win bonus points'}</span>
+              </div>
+              <div className="flex items-center gap-2 font-semibold">
+                <span className="text-amber-600 text-sm">🧴</span>
+                <span>{language === 'km' ? 'ប្តូរយកផលិតផល Lumimei ពិតៗដោយឥតគិតថ្លៃ' : language === 'zh' ? '可用积分免费兑换正品护肤好物' : 'Redeem 100% free Lumimei skincare products'}</span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="space-y-2.5">
+              <button
+                onClick={() => {
+                  setShowRewardAuthModal(false);
+                  if (onNavigateToPhoneLogin) {
+                    onNavigateToPhoneLogin('register');
+                  }
+                }}
+                className="w-full py-3 px-4 bg-gradient-to-r from-emerald-600 via-emerald-700 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold rounded-2xl text-xs sm:text-sm shadow-md transition flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>
+                  {language === 'km'
+                    ? 'បង្កើតគណនីថ្មីឥឡូវនេះ'
+                    : language === 'zh'
+                    ? '立即注册创建账号'
+                    : 'Create Account Now'}
+                </span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowRewardAuthModal(false);
+                  if (onNavigateToPhoneLogin) {
+                    onNavigateToPhoneLogin('login');
+                  }
+                }}
+                className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 text-slate-700 hover:text-emerald-700 font-semibold rounded-2xl text-xs border border-slate-200 transition flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5 text-emerald-600" />
+                <span>
+                  {language === 'km'
+                    ? 'មានគណនីរួចហើយ? ចូលប្រើប្រាស់'
+                    : language === 'zh'
+                    ? '已有账号？直接登录'
+                    : 'Already have an account? Log In'}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       )}

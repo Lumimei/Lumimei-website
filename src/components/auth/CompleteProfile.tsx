@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { db, collection, addDoc, doc, setDoc } from '../../lib/firebase';
-import { UserCheck, ShieldCheck, Loader2, Globe, User as UserIcon, Sparkles, CheckCircle2, Users, Calendar, Send, ChevronDown } from 'lucide-react';
-import { GENDER_OPTIONS, AGE_RANGE_OPTIONS } from './PhoneLogin';
+import { runWithLoading } from '../../utils/asyncUtils';
+import { UserCheck, ShieldCheck, Loader2, Globe, User as UserIcon, Sparkles, CheckCircle2, Users, Calendar, Send, ChevronDown, MapPin } from 'lucide-react';
+import { GENDER_OPTIONS, AGE_RANGE_OPTIONS, LOCATION_OPTIONS } from './PhoneLogin';
 
 interface CompleteProfileProps {
   onCompleted: () => void;
@@ -10,14 +11,14 @@ interface CompleteProfileProps {
 }
 
 const SKIN_CONCERN_OPTIONS = [
-  { id: 'acne', nameKm: 'មុខមុន', descKm: 'មុនក្បាលខ្មៅ មុនរលាក មុនសាច់', icon: '🔴' },
+  { id: 'acne', nameKm: 'មុខមុន', descKm: 'មុនក្បាលខ្មៅ មុនរលាក មុនកប់សាច់', icon: '🔴' },
   { id: 'dullness', nameKm: 'មុខខ្មៅស្រអាប់', descKm: 'ស្បែកគ្មានពន្លឺ ស្លេកស្លាំង', icon: '🟤' },
   { id: 'pores', nameKm: 'មុខមានរន្ធញើសរីកធំ', descKm: 'រន្ធញើសចំហ ស្បែកខ្លាញ់', icon: '🔵' },
   { id: 'rashes', nameKm: 'មុខរោល', descKm: 'ប្រតិកម្ម អាឡែកស៊ី ងាយក្រហម', icon: '🟠' },
   { id: 'inflammation', nameKm: 'មុខរលាក', descKm: 'រលាកក្រហាយ ស្បែកខូចខាត', icon: '🔥' },
 ];
 
-const ACNE_QUICK_TAGS = ['មុនក្បាលខ្មៅ', 'មុនរលាកក្រហម', 'មុនសាច់', 'មុនអ័រម៉ូន', 'មុនក្បាលស'];
+const ACNE_QUICK_TAGS = ['មុនក្បាលខ្មៅ', 'មុនរលាកក្រហម', 'មុនកប់សាច់', 'មុខអង្កាម', 'មុនអ័រម៉ូន', 'មុនក្បាលស'];
 
 export const CompleteProfile: React.FC<CompleteProfileProps> = ({
   onCompleted,
@@ -27,6 +28,7 @@ export const CompleteProfile: React.FC<CompleteProfileProps> = ({
   const [displayName, setDisplayName] = useState('');
   const [gender, setGender] = useState('ស្រី');
   const [ageRange, setAgeRange] = useState('');
+  const [location, setLocation] = useState('');
   const [telegram, setTelegram] = useState('');
   const [preferredLanguage, setPreferredLanguage] = useState<'km' | 'zh' | 'en'>('km');
   const [selectedConcerns, setSelectedConcerns] = useState<string[]>([]);
@@ -68,11 +70,22 @@ export const CompleteProfile: React.FC<CompleteProfileProps> = ({
       return;
     }
 
+    if (!location) {
+      setErrorMessage('សូមជ្រើសរើសទីតាំង (ខេត្ត/ក្រុង) របស់អ្នក។');
+      return;
+    }
+
+    if (!telegram.trim()) {
+      setErrorMessage('សូមបំពេញលេខ Telegram ឬឈ្មោះ Telegram របស់អ្នក (តម្រូវឱ្យបំពេញ *)');
+      return;
+    }
+
     const formData = {
       displayName: cleanName,
       fullName: cleanName,
       gender,
       ageRange,
+      location,
       telegram: telegram.trim(),
       preferredLanguage,
       skinConcerns: selectedConcerns,
@@ -81,52 +94,49 @@ export const CompleteProfile: React.FC<CompleteProfileProps> = ({
       role: 'customer',
     };
 
-    setLoading(true);
+    await runWithLoading(
+      async () => {
+        if (currentUser?.uid) {
+          try {
+            const rawPhone = currentUser.phoneNumber || '';
+            const userDocData = {
+              uid: currentUser.uid,
+              email: currentUser.email || null,
+              name: cleanName || "新用户",
+              ...formData,
+              createdAt: new Date().toISOString()
+            };
 
-    try {
-      if (currentUser?.uid) {
-        try {
-          const rawPhone = currentUser.phoneNumber || '';
-          const cleanPhone = rawPhone.replace(/[^0-9]/g, '');
-
-          const userDocData = {
-            uid: currentUser.uid,
-            email: currentUser.email || null,
-            name: cleanName || "新用户",
-            ...formData,
-            createdAt: new Date().toISOString()
-          };
-
-          await setDoc(doc(db, "users", currentUser.uid), userDocData, { merge: true });
-          
-          if (cleanPhone) {
-            await setDoc(doc(db, "users", cleanPhone), userDocData, { merge: true });
+            await setDoc(doc(db, "users", currentUser.uid), userDocData, { merge: true });
+            console.log("【调试】Firestore 数据写入成功！UID:", currentUser.uid);
+          } catch (firestoreErr: any) {
+            console.warn("【Firestore 写入提示】云端规则暂未放行或网络受限:", firestoreErr);
           }
-          console.log("【调试】Firestore 数据写入成功！UID:", currentUser.uid, "CleanPhone:", cleanPhone);
-        } catch (firestoreErr: any) {
-          console.warn("【Firestore 写入提示】云端规则暂未放行或网络受限:", firestoreErr);
         }
-      }
 
-      await createUserProfile({
-        displayName: cleanName,
-        fullName: cleanName,
-        gender,
-        ageRange,
-        telegram,
-        preferredLanguage,
-        skinConcerns: selectedConcerns,
-        acneDetails: acneDetails.trim(),
-      });
-      onCompleted();
-    } catch (err: any) {
-      console.error("【详细错误对象】:", err);
-      console.error("【错误 Code】:", err.code);
-      console.error("【错误 Message】:", err.message);
-      setErrorMessage(err.message || 'មិនអាចបង្កើតគណនីបានទេ។ សូមព្យាយាមម្ដងទៀត។');
-    } finally {
-      setLoading(false);
-    }
+        await createUserProfile({
+          displayName: cleanName,
+          fullName: cleanName,
+          gender,
+          ageRange,
+          location,
+          telegram: telegram.trim(),
+          preferredLanguage,
+          skinConcerns: selectedConcerns,
+          acneDetails: acneDetails.trim(),
+        });
+        onCompleted();
+      },
+      setLoading,
+      {
+        timeoutMs: 30000,
+        showErrorAlert: false,
+        onError: (err: any) => {
+          console.error("【详细错误对象】:", err);
+          setErrorMessage(err.message || 'មិនអាចបង្កើតគណនីបានទេ។ សូមព្យាយាមម្ដងទៀត។');
+        },
+      }
+    );
   };
 
   return (
@@ -226,17 +236,44 @@ export const CompleteProfile: React.FC<CompleteProfileProps> = ({
             </div>
           </div>
 
+          {/* ទីតាំង */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+              <span>ទីតាំង <span className="text-red-500">*</span></span>
+            </label>
+            <div className="relative">
+              <select
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                required
+                className="w-full px-3 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-xs sm:text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer appearance-none pr-8"
+              >
+                <option value="">-- ជ្រើសរើសទីតាំង (ខេត្ត/ក្រុង) --</option>
+                {LOCATION_OPTIONS.map((loc) => (
+                  <option key={loc} value={loc}>
+                    {loc}
+                  </option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                <ChevronDown className="w-4 h-4" />
+              </div>
+            </div>
+          </div>
+
           {/* Telegram */}
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Send className="w-3.5 h-3.5 text-sky-600" />
-                <span>លេខ Telegram</span>
+                <span>លេខ Telegram ឬ ឈ្មោះតេឡេក្រាម <span className="text-red-500">*</span></span>
               </span>
-              <span className="text-[10px] text-slate-400 font-normal">(ស្រេចចិត្ត)</span>
+              <span className="text-[10px] text-red-500 font-semibold">(តម្រូវឱ្យបំពេញ *)</span>
             </label>
             <input
               type="text"
+              required
               value={telegram}
               onChange={(e) => setTelegram(e.target.value)}
               placeholder="ឧ. @username ឬ 012 345 678"

@@ -9,13 +9,12 @@ import {
   CheckoutModal,
   KHQRModal,
   OrderSuccessModal,
-  AISkincareAdvisorModal,
-  FaceSkinScannerModal,
   WishlistDrawer,
   BeautyTipsSection,
+  AcneEmpathyJourneySection,
+  BrandCommitmentSection,
   Footer,
   ChatBotWidget,
-  GeminiDebugIndicator,
   PhoneLogin,
   VerifyPhone,
   CompleteProfile,
@@ -23,9 +22,9 @@ import {
   AccountSettings,
   ProtectedRoute,
   MyPointsModal,
-  ScanComingSoonModal,
+  MobileBottomNav,
+  AISkincareAdvisorModal,
   AdminDashboard,
-  AdminTaskEditor,
 } from './components';
 import { ConfirmationResult } from 'firebase/auth';
 import { db, doc, setDoc } from './lib/firebase';
@@ -33,7 +32,7 @@ import { useAuth } from './context/AuthContext';
 import { CATEGORIES, SKIN_CONCERNS, BRANDS, KHR_RATE } from './data/products';
 import { getAllStoredProducts, subscribeToProducts } from './utils/productManager';
 import { Product, CartItem, Order, SkinType, PaymentMethod, OrderCustomerInfo, Language } from './types';
-import { Sparkles, SlidersHorizontal, RefreshCw, CheckCircle2, Filter, ChevronRight } from 'lucide-react';
+import { Sparkles, SlidersHorizontal, RefreshCw, CheckCircle2, ChevronRight } from 'lucide-react';
 
 export default function App() {
   const { currentUser, userProfile, updateUserProfile, loading: authLoading } = useAuth();
@@ -120,17 +119,32 @@ export default function App() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
-  const [isAiAdvisorOpen, setIsAiAdvisorOpen] = useState(false);
-  const [isSkinScanOpen, setIsSkinScanOpen] = useState(false);
   const [isPointsOpen, setIsPointsOpen] = useState(false);
-  const [isScanComingSoonOpen, setIsScanComingSoonOpen] = useState(false);
+  const [isAiAdvisorOpen, setIsAiAdvisorOpen] = useState(false);
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
 
   // Active Order State
   const [appliedDiscountUsd, setAppliedDiscountUsd] = useState(0);
   const [shippingFeeUsd, setShippingFeeUsd] = useState(0);
-  const [activeKHQROrder, setActiveKHQROrder] = useState<Order | null>(null);
+  const [activeKHQROrder, setActiveKHQROrder] = useState<Order | null>(() => {
+    try {
+      const saved = sessionStorage.getItem('lumimei_active_khqr_order');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return null;
+  });
   const [completedOrder, setCompletedOrder] = useState<Order | null>(null);
+
+  // Sync activeKHQROrder with sessionStorage
+  useEffect(() => {
+    try {
+      if (activeKHQROrder) {
+        sessionStorage.setItem('lumimei_active_khqr_order', JSON.stringify(activeKHQROrder));
+      } else {
+        sessionStorage.removeItem('lumimei_active_khqr_order');
+      }
+    } catch {}
+  }, [activeKHQROrder]);
 
   // URL route listener on mount & popstate
   useEffect(() => {
@@ -139,6 +153,58 @@ export default function App() {
       const hash = window.location.hash;
       const searchParams = new URLSearchParams(window.location.search);
       const productId = searchParams.get('product') || (hash.includes('product-') ? hash.split('product-')[1] : null);
+
+      if (path === '/payment' || path === '/khqr' || hash === '#payment' || hash === '#khqr' || searchParams.get('modal') === 'khqr') {
+        try {
+          const savedActive = sessionStorage.getItem('lumimei_active_khqr_order');
+          if (savedActive) {
+            setActiveKHQROrder(JSON.parse(savedActive));
+          } else {
+            const userOrders = JSON.parse(localStorage.getItem('lumimei_user_orders') || '[]');
+            const pendingKhqr = userOrders.find((o: Order) => (o.paymentMethod === 'khqr' || o.paymentMethod === 'aba_pay') && o.paymentStatus !== 'paid');
+            if (pendingKhqr) {
+              setActiveKHQROrder(pendingKhqr);
+            } else if (userOrders.length > 0) {
+              setActiveKHQROrder(userOrders[0]);
+            } else {
+              // Default preview order so ABA KHQR page responds directly on mobile & desktop
+              const catalogProducts = getAllStoredProducts();
+              const sampleItems = (catalogProducts.length > 0 ? catalogProducts.slice(0, 2) : []).map((p) => ({
+                product: p,
+                quantity: 1,
+              }));
+              const sampleSubtotal = sampleItems.reduce((sum, it) => sum + it.product.priceUsd * it.quantity, 0) || 28.00;
+              const sampleShipping = 1.50;
+              const sampleTotalUsd = sampleSubtotal + sampleShipping;
+              const sampleTotalKhr = Math.round(sampleTotalUsd * KHR_RATE);
+
+              setActiveKHQROrder({
+                id: `ORD-${Date.now().toString().slice(-6)}`,
+                orderNumber: `LM-${Date.now().toString().slice(-6)}`,
+                items: sampleItems,
+                subtotalUsd: sampleSubtotal,
+                discountUsd: 0,
+                shippingFeeUsd: sampleShipping,
+                totalUsd: sampleTotalUsd,
+                totalKhr: sampleTotalKhr,
+                customerInfo: {
+                  fullName: 'អតិថិជន (Customer)',
+                  phone: '012 345 678',
+                  cityProvince: 'Phnom Penh',
+                  districtSangkat: 'Chamkarmon',
+                  addressDetail: 'Street 271, Phnom Penh',
+                },
+                paymentMethod: 'khqr',
+                paymentStatus: 'pending',
+                orderStatus: 'confirmed',
+                createdAt: new Date().toLocaleDateString('km-KH'),
+                estimatedDelivery: 'ក្នុងថ្ងៃនេះ (Same Day 2 Hours)',
+                trackingCode: `JT${Math.floor(8000000 + Math.random() * 1000000)}KH`,
+              });
+            }
+          }
+        } catch {}
+      }
 
       if (path === '/admin' || hash === '#admin' || hash === '#/admin' || hash.startsWith('#admin')) {
         setCurrentPage('admin');
@@ -187,18 +253,34 @@ export default function App() {
     if (window.location.pathname !== '/' || window.location.hash) {
       window.history.pushState({}, '', '/');
     }
+    setSelectedCategory('all');
+    setSelectedSkinConcern('all');
+    setSelectedBrand('all');
+    setSearchQuery('');
     setCurrentPage('home');
+    setIsPointsOpen(false);
+    setIsCartOpen(false);
+    setIsWishlistOpen(false);
+    setQuickViewProduct(null);
+    window.dispatchEvent(new CustomEvent('lumimei_reviews_closed'));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const navigateToProducts = (category = 'all') => {
-    if (window.location.pathname !== '/products') {
-      window.history.pushState({}, '', '/products');
+  const navigateToProducts = (category?: unknown) => {
+    const validCategory = typeof category === 'string' && category.trim() ? category.trim() : 'all';
+    if (window.location.pathname !== '/products' || window.location.hash) {
+      window.history.pushState({}, '', validCategory !== 'all' ? `/products?cat=${validCategory}` : '/products');
     }
-    if (category) {
-      setSelectedCategory(category);
-    }
+    setSelectedCategory(validCategory);
+    setSelectedSkinConcern('all');
+    setSelectedBrand('all');
+    setSearchQuery('');
     setCurrentPage('products');
+    setIsPointsOpen(false);
+    setIsCartOpen(false);
+    setIsWishlistOpen(false);
+    setQuickViewProduct(null);
+    window.dispatchEvent(new CustomEvent('lumimei_reviews_closed'));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -556,7 +638,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 antialiased flex flex-col selection:bg-emerald-600 selection:text-white">
+    <div className="min-h-screen bg-white font-sans text-[#2E8B57] antialiased flex flex-col selection:bg-[#2E8B57] selection:text-white lg:pl-[260px] xl:pl-[280px]">
       {/* Navbar Header */}
       <Header
         searchQuery={searchQuery}
@@ -567,9 +649,20 @@ export default function App() {
         wishlistCount={wishlist.length}
         onOpenCart={() => setIsCartOpen(true)}
         onOpenWishlist={() => setIsWishlistOpen(true)}
-        onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
-        onOpenSkinScan={() => setIsScanComingSoonOpen(true)}
-        onOpenPoints={() => setIsPointsOpen(true)}
+        onOpenPoints={() => {
+          if (!currentUser && !userProfile) {
+            navigateToPhoneLogin(
+              'register',
+              language === 'km'
+                ? '🎉 សូមបង្កើតគណនីថ្មីជាមុនសិន ដើម្បីទទួលបានរង្វាន់ សន្សំពិន្ទុ និងប្តូរយកផលិតផល Lumimei ដោយឥតគិតថ្លៃ!'
+                : language === 'zh'
+                ? '🎉 请先注册创建账号，即可参与赢取积分与兑换 Lumimei 专属奖励！'
+                : '🎉 Please create an account first to unlock rewards, earn points, and redeem free Lumimei products!'
+            );
+            return;
+          }
+          setIsPointsOpen(true);
+        }}
         language={language}
         setLanguage={setLanguage}
         totalUsd={cartSubtotalUsd}
@@ -580,10 +673,16 @@ export default function App() {
         onNavigateToDashboard={navigateToDashboard}
         onNavigateToAccount={navigateToAccount}
         onNavigateToAdmin={navigateToAdmin}
+        onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
       />
 
       {/* Main App Canvas */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 pt-1.5 sm:pt-2 pb-6">
+      <main
+        className="flex-1 max-w-7xl w-full mx-auto px-4 pt-1.5 sm:pt-2"
+        style={{
+          paddingBottom: 'calc(84px + env(safe-area-inset-bottom, 0px))',
+        }}
+      >
         {currentPage === 'products' ? (
           <ProductsPage
             products={filteredProducts}
@@ -676,11 +775,9 @@ export default function App() {
             onProfileIncomplete={navigateToCompleteProfile}
           >
             <Dashboard
-              onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
               onNavigateToAccount={navigateToAccount}
               onLogoutSuccess={navigateToHome}
               onOpenPoints={() => setIsPointsOpen(true)}
-              onOpenSkinScan={() => setIsScanComingSoonOpen(true)}
               onNavigateToAdmin={navigateToAdmin}
             />
           </ProtectedRoute>
@@ -696,6 +793,7 @@ export default function App() {
           >
             <AccountSettings
               onNavigateHome={navigateToHome}
+              onNavigateToDashboard={navigateToDashboard}
               onLogoutSuccess={navigateToHome}
               onLanguageChanged={(lang) => setLanguage(lang)}
             />
@@ -706,7 +804,7 @@ export default function App() {
             <HeroBanner
               language={language}
               onNavigateToProducts={navigateToProducts}
-              onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
+              onOpenFreeAnalysis={() => setIsAiAdvisorOpen(true)}
               onSelectTag={(tag) => {
                 if (['sunscreen', 'cleanser', 'serum', 'moisturizer'].includes(tag)) {
                   setSelectedCategory(tag);
@@ -719,72 +817,20 @@ export default function App() {
               }}
             />
 
-            {/* Promotion Section */}
-            <div id="promotion-section" className="bg-white rounded-3xl p-4 sm:p-6 border-2 border-emerald-600/20 shadow-sm my-6 scroll-mt-28">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-emerald-100">
-                <div className="flex items-center gap-3">
-                  <div className="w-2.5 h-8 bg-emerald-600 rounded-full" />
-                  <div>
-                    <h2 className="font-extrabold font-opensans" style={{ color: '#009966', fontSize: '27px' }}>
-                      Promotion
-                    </h2>
-                  </div>
-                </div>
-
-                <button
-                  onClick={navigateToPromotions}
-                  className="flex items-center gap-2 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer self-start sm:self-auto"
-                >
-                  <span>
-                    {language === 'km'
-                      ? 'មើលប្រូម៉ូសិនទាំងអស់ (' + promotionalProducts.length + ')'
-                      : language === 'zh'
-                      ? '查看所有特惠 (' + promotionalProducts.length + ')'
-                      : 'View All Promotions (' + promotionalProducts.length + ')'}
-                  </span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Promotion Product Cards Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-                {promotionalProducts.slice(0, 4).map((prod) => (
-                  <ProductCard
-                    key={'promo-' + prod.id}
-                    product={prod}
-                    language={language}
-                    isWishlisted={wishlist.some((p) => p.id === prod.id)}
-                    isInCart={cart.some((item) => item.product.id === prod.id)}
-                    onToggleWishlist={handleToggleWishlist}
-                    onAddToCart={(p) => handleAddToCart(p, 1)}
-                    onQuickView={(p) => handleQuickViewWithUrl(p)}
-                  />
-                ))}
-              </div>
-
-              <div className="mt-6 text-center pt-4 border-t border-slate-100">
-                <button
-                  onClick={navigateToPromotions}
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-2xl text-xs sm:text-sm font-bold shadow-md hover:shadow-lg transition cursor-pointer"
-                >
-                  <span>
-                    {language === 'km'
-                      ? 'ចូលទៅកាន់ទំព័រប្រូម៉ូសិនទាំងអស់ →'
-                      : language === 'zh'
-                      ? '进入所有特惠页面 →'
-                      : 'Go to All Promotions Page →'}
-                  </span>
-                </button>
-              </div>
-            </div>
+            {/* Acne Emotional Empathy & Mindset Journey Section */}
+            <AcneEmpathyJourneySection
+              language={language}
+              onNavigateToProducts={navigateToProducts}
+              onOpenFreeAnalysis={() => setIsAiAdvisorOpen(true)}
+            />
 
             {/* Lumimei Set Section */}
-            <div id="products-section" className="bg-white rounded-3xl p-4 sm:p-6 border-2 border-emerald-600/20 shadow-sm my-6 scroll-mt-28">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-emerald-100">
+            <div id="products-section" className="bg-white rounded-3xl p-4 sm:p-6 border-2 border-[#2E8B57]/20 shadow-sm my-6 scroll-mt-28">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-[#2E8B57]/15">
                 <div className="flex items-center gap-3">
-                  <div className="w-2.5 h-8 bg-emerald-600 rounded-full" />
+                  <div className="w-2.5 h-8 bg-[#2E8B57] rounded-full" />
                   <div>
-                    <h2 className="font-extrabold font-opensans" style={{ color: '#009966', fontSize: '27px' }}>
+                    <h2 className="font-extrabold font-opensans text-[#2E8B57]" style={{ fontSize: '27px' }}>
                       {language === 'km' ? 'ផលិតផល Lumimei' : language === 'zh' ? 'Lumimei 护肤品' : 'Lumimei Products'}
                     </h2>
                   </div>
@@ -792,16 +838,16 @@ export default function App() {
 
                 <button
                   onClick={navigateToProducts}
-                  className="flex items-center gap-2 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer self-start sm:self-auto"
+                  className="flex items-center gap-2 px-4 py-2 bg-[#2E8B57] hover:bg-[#257347] text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer self-start sm:self-auto"
                 >
                   <span>{language === 'km' ? 'មើលផលិតផលទាំងអស់ (' + allProducts.length + ')' : language === 'zh' ? '查看所有商品 (' + allProducts.length + ')' : 'View All Products (' + allProducts.length + ')'}</span>
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Product Cards Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-                {filteredProducts.slice(0, 8).map((prod) => (
+              {/* Product Cards Grid (Only 2 products) */}
+              <div className="grid grid-cols-2 gap-4 sm:gap-6">
+                {filteredProducts.slice(0, 2).map((prod) => (
                   <ProductCard
                     key={'set-' + prod.id}
                     product={prod}
@@ -815,21 +861,47 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="mt-6 text-center pt-4 border-t border-slate-100">
+              <div className="mt-6 text-center pt-4 border-t border-[#2E8B57]/10">
                 <button
                   onClick={navigateToProducts}
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-2xl text-xs sm:text-sm font-bold shadow-md hover:shadow-lg transition cursor-pointer"
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-[#2E8B57] hover:bg-[#257347] text-white rounded-2xl text-xs sm:text-sm font-bold shadow-md hover:shadow-lg transition cursor-pointer"
                 >
                   <span>{language === 'km' ? 'ចូលទៅកាន់ទំព័រផលិតផលទាំងអស់ →' : language === 'zh' ? '进入所有商品页面 →' : 'Go to All Products Page →'}</span>
                 </button>
               </div>
             </div>
+
+            {/* Brand Commitment Section (Below Products Section) */}
+            <BrandCommitmentSection language={language} />
           </>
         )}
       </main>
 
       {/* Footer */}
       <Footer language={language} onNavigateToAdmin={navigateToAdmin} />
+
+      {/* Mobile Bottom Navigation (< 768px visible, >= 768px hidden) */}
+      <MobileBottomNav
+        currentPage={currentPage}
+        language={language}
+        onNavigateToHome={navigateToHome}
+        onNavigateToProducts={() => navigateToProducts('all')}
+        onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
+        onOpenFreeAnalysis={() => setIsAiAdvisorOpen(true)}
+        onOpenReviews={() => {
+          window.dispatchEvent(new CustomEvent('lumimei_open_reviews'));
+        }}
+        onNavigateToAccount={() => {
+          if (currentUser || userProfile) {
+            navigateToDashboard();
+          } else {
+            navigateToPhoneLogin('login');
+          }
+        }}
+        onNavigateToPhoneLogin={(mode) => navigateToPhoneLogin(mode || 'login')}
+        isAiAdvisorOpen={isAiAdvisorOpen}
+        isFreeAnalysisOpen={isAiAdvisorOpen}
+      />
 
       {/* Overlays, Drawers & Modals */}
       {quickViewProduct && (
@@ -856,6 +928,7 @@ export default function App() {
         language={language}
         items={cart}
         onClose={() => setIsCartOpen(false)}
+        onNavigateToProducts={() => navigateToProducts('all')}
         onUpdateQuantity={handleUpdateCartQuantity}
         onRemoveItem={handleRemoveFromCart}
         onProceedToCheckout={handleProceedToCheckout}
@@ -884,7 +957,12 @@ export default function App() {
       <KHQRModal
         order={activeKHQROrder}
         language={language}
-        onClose={() => setActiveKHQROrder(null)}
+        onClose={() => {
+          setActiveKHQROrder(null);
+          if (window.location.hash === '#payment' || window.location.hash === '#khqr') {
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        }}
         onPaymentSuccess={handlePaymentSuccess}
       />
 
@@ -894,36 +972,36 @@ export default function App() {
         onClose={() => setCompletedOrder(null)}
       />
 
-      <AISkincareAdvisorModal
-        isOpen={isAiAdvisorOpen}
-        language={language}
-        onClose={() => setIsAiAdvisorOpen(false)}
-        onAddMultipleToCart={handleAddMultipleToCart}
-        products={allProducts}
-      />
-
       <MyPointsModal
         isOpen={isPointsOpen}
         language={language}
         onClose={() => setIsPointsOpen(false)}
         onAddToCart={(p) => handleAddToCart(p, 1)}
-      />
-
-      <ScanComingSoonModal
-        isOpen={isScanComingSoonOpen}
-        language={language}
-        onClose={() => setIsScanComingSoonOpen(false)}
-        onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
-      />
-
-      <FaceSkinScannerModal
-        isOpen={isSkinScanOpen}
-        language={language}
-        onClose={() => setIsSkinScanOpen(false)}
-        onAddToCart={(p) => handleAddToCart(p, 1)}
-        onAddMultipleToCart={handleAddMultipleToCart}
-        onNavigateToPhoneLogin={() => navigateToPhoneLogin()}
+        onNavigateToPhoneLogin={(mode, notice) => navigateToPhoneLogin(mode, notice)}
         products={allProducts}
+        onSelectProduct={(p) => {
+          setIsPointsOpen(false);
+          handleQuickViewWithUrl(p);
+        }}
+      />
+
+      <AISkincareAdvisorModal
+        isOpen={isAiAdvisorOpen}
+        onClose={() => setIsAiAdvisorOpen(false)}
+        language={language}
+        onNavigateToAccount={() => {
+          setIsAiAdvisorOpen(false);
+          navigateToDashboard();
+        }}
+        onNavigateToFollowUp={() => {
+          setIsAiAdvisorOpen(false);
+          navigateToDashboard();
+        }}
+        onAddToCart={(p, qty) => handleAddToCart(p, qty)}
+        onSelectProduct={(p) => {
+          setIsAiAdvisorOpen(false);
+          handleQuickViewWithUrl(p);
+        }}
       />
 
       <ChatBotWidget
@@ -931,9 +1009,6 @@ export default function App() {
         onSelectProduct={(product) => handleQuickViewWithUrl(product)}
         products={allProducts}
       />
-
-      {/* Development Mode Indicator */}
-      <GeminiDebugIndicator />
 
       {/* Privacy Policy Modal */}
       {showPrivacyPolicyModal && (
@@ -977,13 +1052,6 @@ export default function App() {
               </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ⚙️ Lumimei 动态积分管理后台 (Visible when current page is admin or when requested) */}
-      {currentPage === 'admin' && (
-        <div className="max-w-4xl mx-auto my-8 px-4">
-          <AdminTaskEditor />
         </div>
       )}
     </div>

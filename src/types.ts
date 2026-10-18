@@ -17,6 +17,21 @@ export interface SkinConcern {
   nameZh?: string;
 }
 
+export interface ProductPromoText {
+  enabled?: boolean;
+  badge?: string;
+  title: string;
+  content: string;
+  fontFamily?: string;
+  primaryColor?: string;
+  backgroundColor?: string;
+  titleFontSize?: string;
+  contentFontSize?: string;
+  listType?: 'none' | 'bullet' | 'numbered';
+  bulletItems?: string[];
+  textAlignment?: 'left' | 'center' | 'right';
+}
+
 export interface ProductDescriptionCard {
   id: string;
   image: string;
@@ -35,14 +50,24 @@ export interface Product {
   priceKhr: number;
   pointsCost?: number;
   originalPriceUsd?: number;
+  discountCode?: string;
+  discountPercent?: number;
   rating: number;
   reviewCount: number;
   image: string;
+  imageKm?: string;
+  imageEn?: string;
+  imageZh?: string;
   gallery?: string[];
+  galleryKm?: string[];
+  galleryEn?: string[];
+  galleryZh?: string[];
+  promoText?: ProductPromoText;
   descriptionCards?: ProductDescriptionCard[];
   isNew?: boolean;
   isBestSeller?: boolean;
   isFreeShipping?: boolean;
+  isPromotion?: boolean;
   skinTypes: SkinType[];
   skinConcerns: string[];
   description: string;
@@ -87,6 +112,7 @@ export interface OrderCustomerInfo {
   phone: string;
   telegramPhone?: string;
   skinConcern?: string;
+  skinConcernDetail?: string;
   cityProvince: string;
   districtSangkat: string;
   sangkatCommune?: string;
